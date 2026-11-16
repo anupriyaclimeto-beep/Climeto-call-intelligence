@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import initSqlJs from 'sql.js';
 import { runMigrations } from './migrations/index.js';
@@ -17,6 +18,7 @@ const dir = path.dirname(dbPath);
 if (!fs.existsSync(dir)) {
   fs.mkdirSync(dir, { recursive: true });
 }
+const shouldSeedSampleData = process.env.WORKSPACE_SAMPLE_DATA === 'true';
 
 let db;
 
@@ -28,6 +30,12 @@ export function persistDb() {
 
 function run(query, params = []) {
   db.run(query, params);
+}
+
+function execute(query, params = []) {
+  const statement = db.prepare(query);
+  statement.run(params);
+  statement.free();
 }
 
 function all(query, params = []) {
@@ -52,6 +60,10 @@ function parseCall(row) {
     ...row,
     score: row.score_json ? JSON.parse(row.score_json) : null,
   };
+}
+
+function sanitizePhone(value = '') {
+  return String(value).trim().replace(/\s+/g, '');
 }
 
 export async function initializeDb() {
@@ -122,7 +134,7 @@ export async function initializeDb() {
   runMigrations(db, { persist: persistDb });
 
   const row = get('SELECT COUNT(*) AS count FROM calls');
-  if ((row?.count ?? 0) === 0) {
+  if ((row?.count ?? 0) === 0 && (shouldSeedSampleData || process.env.NODE_ENV !== 'production')) {
     seedLocalData();
   }
 
@@ -386,6 +398,7 @@ export function listActivities(platform = '') {
   return all(query, params);
 }
 
+
 export function findLeadByEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
   if (!normalized) return null;
@@ -550,4 +563,133 @@ export function resetManyreachTestData() {
   run(`DELETE FROM campaign_events WHERE is_seeded = 0`);
   run(`DELETE FROM webhook_events WHERE source = 'manyreach'`);
   persistDb();
+
+}
+
+
+export function createCompletedCall(payload = {}) {
+  const clientPhone = sanitizePhone(payload.clientPhone || payload.client_phone || '');
+  const email = String(payload.email || '').trim();
+  const clientName = String(payload.clientName || payload.client_name || 'New Prospect').trim();
+  const executiveName = String(payload.executiveName || payload.executive_name || 'Ambuj Pathak').trim();
+  const summary = String(payload.summary || 'Call completed. Summary pending.').trim();
+  const promise = String(payload.promise || 'Pending follow-up').trim();
+  const nextAction = String(
+    payload.nextAction || payload.next_action || 'Review completed call and plan follow-up.',
+  ).trim();
+  const transcript = String(payload.transcript || 'Transcript pending.').trim();
+  const sentiment = String(payload.sentiment || 'Neutral').trim();
+  const direction = String(payload.direction || 'Outgoing').trim();
+  const status = String(payload.status || 'completed').trim();
+  const durationSeconds = Number(payload.durationSeconds || payload.duration_seconds || 0);
+  const createdAt = payload.createdAt || payload.created_at || new Date().toISOString();
+  const scoreJson = payload.score ? JSON.stringify(payload.score) : null;
+  const callId = String(payload.id || `call-${randomUUID().slice(0, 8)}`).trim();
+
+  let lead = null;
+  if (clientPhone) {
+    lead = get('SELECT * FROM leads WHERE client_phone = ? LIMIT 1', [clientPhone]);
+  }
+  if (!lead && email) {
+    lead = get('SELECT * FROM leads WHERE email = ? LIMIT 1', [email]);
+  }
+
+  const defaultUser = get('SELECT id, name FROM users ORDER BY rowid ASC LIMIT 1');
+  const defaultDevice = get('SELECT id FROM devices ORDER BY rowid ASC LIMIT 1');
+  const leadId = lead?.id || `lead-${randomUUID().slice(0, 8)}`;
+
+  if (!lead) {
+    execute(
+      `INSERT INTO leads
+       (id, client_name, client_phone, email, company, stage, owner_id, hotness, latest_summary, next_action, zoho_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        leadId,
+        clientName,
+        clientPhone,
+        email,
+        payload.company || clientName,
+        payload.stage || 'Contacted',
+        payload.ownerId || defaultUser?.id || 'u-ambuj',
+        payload.hotness || 'warm',
+        summary,
+        nextAction,
+        payload.zohoUrl || '',
+      ],
+    );
+  } else {
+    execute(
+      `UPDATE leads
+       SET client_name = ?, client_phone = ?, email = ?, latest_summary = ?, next_action = ?, stage = COALESCE(?, stage), hotness = COALESCE(?, hotness)
+       WHERE id = ?`,
+      [
+        clientName || lead.client_name,
+        clientPhone || lead.client_phone,
+        email || lead.email,
+        summary,
+        nextAction,
+        payload.stage || null,
+        payload.hotness || null,
+        leadId,
+      ],
+    );
+  }
+
+  const existingCall = get('SELECT id FROM calls WHERE id = ? LIMIT 1', [callId]);
+
+  if (existingCall) {
+    execute(
+      `UPDATE calls
+       SET lead_id = ?, user_id = ?, device_id = ?, executive_name = ?, client_name = ?, client_phone = ?, direction = ?, duration_seconds = ?, created_at = ?, status = ?, sentiment = ?, summary = ?, promise = ?, next_action = ?, transcript = ?, score_json = ?
+       WHERE id = ?`,
+      [
+        leadId,
+        payload.userId || defaultUser?.id || 'u-ambuj',
+        payload.deviceId || defaultDevice?.id || 'd-ambuj-1',
+        executiveName,
+        clientName,
+        clientPhone,
+        direction,
+        durationSeconds,
+        createdAt,
+        status,
+        sentiment,
+        summary,
+        promise,
+        nextAction,
+        transcript,
+        scoreJson,
+        callId,
+      ],
+    );
+  } else {
+    execute(
+      `INSERT INTO calls
+       (id, lead_id, user_id, device_id, executive_name, client_name, client_phone, direction, duration_seconds, created_at, status, sentiment, summary, promise, next_action, transcript, score_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        callId,
+        leadId,
+        payload.userId || defaultUser?.id || 'u-ambuj',
+        payload.deviceId || defaultDevice?.id || 'd-ambuj-1',
+        executiveName,
+        clientName,
+        clientPhone,
+        direction,
+        durationSeconds,
+        createdAt,
+        status,
+        sentiment,
+        summary,
+        promise,
+        nextAction,
+        transcript,
+        scoreJson,
+      ],
+    );
+  }
+
+  persistDb();
+  return getCallById(callId);
+
 }

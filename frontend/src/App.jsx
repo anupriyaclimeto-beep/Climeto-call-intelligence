@@ -9,7 +9,6 @@ import {
   Phone,
   Search,
   Settings,
-  ShieldCheck,
   Users,
 } from 'lucide-react';
 import {
@@ -51,8 +50,18 @@ const platformCopy = {
   },
 };
 
-async function api(path) {
-  const response = await fetch(`${API_BASE}${path}`);
+async function api(path, options = {}) {
+  const requestOptions = { ...options };
+  if (requestOptions.body && typeof requestOptions.body !== 'string') {
+    requestOptions.body = JSON.stringify(requestOptions.body);
+  }
+
+  requestOptions.headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+  };
+
+  const response = await fetch(`${API_BASE}${path}`, requestOptions);
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
@@ -109,6 +118,50 @@ function normalizeTranscript(value) {
   return String(value || '').replace(/\\n/g, '\n');
 }
 
+function parseJsonString(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function formatPromiseText(value) {
+  const text = String(value || '').trim();
+  if (!text) return 'Not sure';
+  if (text.toLowerCase() === 'pending follow-up') return 'No firm promise';
+  return text;
+}
+
+function formatImportantPoint(value) {
+  const parsed = parseJsonString(value);
+
+  if (Array.isArray(parsed)) {
+    const items = parsed
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') return item.task || item.text || item.what || '';
+        return '';
+      })
+      .filter(Boolean);
+
+    if (items.length) return items.slice(0, 2).join(' | ');
+  }
+
+  const text = String(value || '').trim();
+  if (!text) return 'Follow-up needed';
+  if (text.startsWith('[') && text.endsWith(']')) return 'Follow-up actions captured';
+  return text;
+}
+
+function formatResponseText(sentiment) {
+  const value = String(sentiment || '').toLowerCase();
+  if (value.includes('positive')) return 'Positive';
+  if (value.includes('negative')) return 'Negative';
+  return 'Not sure';
+}
+
 function scoreTone(value) {
   if (value >= 4) return 'good';
   if (value >= 3) return 'mid';
@@ -136,7 +189,7 @@ function pageTitle(pathname) {
   return 'Dashboard';
 }
 
-function AppShell({ children }) {
+function AppShell({ children, liveNotice }) {
   const location = useLocation();
 
   return (
@@ -161,7 +214,6 @@ function AppShell({ children }) {
             </NavLink>
           ))}
         </nav>
-
         <div className="sidebar-note">
           <ShieldCheck size={18} />
           <div>
@@ -182,14 +234,15 @@ function AppShell({ children }) {
             <ArrowUpRight size={16} />
           </a>
         </header>
+        {liveNotice ? <div className="live-banner">{liveNotice}</div> : null}
         {children}
       </main>
     </div>
   );
 }
 
-function DashboardPage() {
-  const dashboard = useAsync(() => api('/api/dashboard'), []);
+function DashboardPage({ refreshKey }) {
+  const dashboard = useAsync(() => api('/api/dashboard'), [refreshKey]);
   const activities = useAsync(() => api('/api/activities'), []);
 
   const feed = useMemo(() => activities.data || [], [activities.data]);
@@ -289,12 +342,12 @@ function DashboardPage() {
   );
 }
 
-function CallsPage() {
+function CallsPage({ refreshKey }) {
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
   const callsState = useAsync(
     () => api(`/api/calls?search=${encodeURIComponent(search)}&stage=${encodeURIComponent(stage)}`),
-    [search, stage],
+    [search, stage, refreshKey],
   );
 
   const calls = callsState.data || [];
@@ -302,6 +355,13 @@ function CallsPage() {
 
   return (
     <section className="page-stack">
+      <div className="section-head">
+        <div>
+          <h3>Completed Calls</h3>
+          <p>Jese hi call khatam ho, yeh list auto-refresh hokar nayi entry dikha degi.</p>
+        </div>
+      </div>
+
       <div className="card filter-bar">
         <div className="search-box">
           <Search size={16} />
@@ -346,16 +406,16 @@ function CallsPage() {
             </div>
 
             <div className="info-block">
-              <label>What happened</label>
-              <p>{call.summary}</p>
+              <label>Response</label>
+              <p>{formatResponseText(call.sentiment)}</p>
             </div>
             <div className="info-block">
               <label>Promise</label>
-              <p>{call.promise}</p>
+              <p>{formatPromiseText(call.promise)}</p>
             </div>
             <div className="info-block">
-              <label>Next action</label>
-              <p>{call.next_action}</p>
+              <label>Important</label>
+              <p className="clamp-3">{formatImportantPoint(call.next_action)}</p>
             </div>
 
             <div className="call-footer">
@@ -376,15 +436,15 @@ function CallsPage() {
   );
 }
 
-function CallDetailPage() {
+function CallDetailPage({ refreshKey }) {
   const { callId } = useParams();
   const navigate = useNavigate();
-  const callState = useAsync(() => api(`/api/calls/${callId}`), [callId]);
+  const callState = useAsync(() => api(`/api/calls/${callId}`), [callId, refreshKey]);
   const settingsState = useAsync(() => api('/api/settings/zoho'), []);
   const leadId = callState.data?.lead_id;
   const leadState = useAsync(
     () => (leadId ? api(`/api/leads/${leadId}`) : Promise.resolve(null)),
-    [leadId],
+    [leadId, refreshKey],
   );
 
   const call = callState.data;
@@ -431,8 +491,8 @@ function CallDetailPage() {
             <div className="detail-grid">
               <InfoCard title="Client phone" value={call.client_phone} />
               <InfoCard title="Stage" value={call.stage || 'Not mapped yet'} />
-              <InfoCard title="Promise" value={call.promise} />
-              <InfoCard title="Next action" value={call.next_action} />
+              <InfoCard title="Promise" value={formatPromiseText(call.promise)} />
+              <InfoCard title="Important" value={formatImportantPoint(call.next_action)} />
             </div>
           </section>
 
@@ -498,7 +558,7 @@ function CallDetailPage() {
                   </div>
                   <div className="info-block">
                     <label>Planned next action</label>
-                    <p>{lead.next_action}</p>
+                    <p>{formatImportantPoint(lead.next_action)}</p>
                   </div>
                 </div>
               ) : null}
@@ -538,8 +598,8 @@ function CallDetailPage() {
   );
 }
 
-function Lead360Page() {
-  const leadsState = useAsync(() => api('/api/leads'), []);
+function Lead360Page({ refreshKey }) {
+  const leadsState = useAsync(() => api('/api/leads'), [refreshKey]);
   const leads = leadsState.data || [];
 
   return (
@@ -577,9 +637,9 @@ function Lead360Page() {
   );
 }
 
-function LeadDetailPage() {
+function LeadDetailPage({ refreshKey }) {
   const { leadId } = useParams();
-  const leadState = useAsync(() => api(`/api/leads/${leadId}`), [leadId]);
+  const leadState = useAsync(() => api(`/api/leads/${leadId}`), [leadId, refreshKey]);
   const settingsState = useAsync(() => api('/api/settings/zoho'), []);
   const data = leadState.data;
   const lead = data?.lead;
@@ -617,7 +677,7 @@ function LeadDetailPage() {
               <InfoCard title="Phone" value={lead.client_phone} />
               <InfoCard title="Email" value={lead.email} />
               <InfoCard title="Last summary" value={lead.latest_summary} />
-              <InfoCard title="Next action" value={lead.next_action} />
+              <InfoCard title="Important" value={formatImportantPoint(lead.next_action)} />
             </div>
           </section>
 
@@ -834,7 +894,7 @@ function PlatformPage() {
 
   return (
     <section className="page-stack">
-      <section className="card">
+      <section className="platform-shell">
         <div className="section-head">
           <div>
             <div className="eyebrow">Platform skeleton</div>
@@ -1012,16 +1072,53 @@ function ErrorCard({ message }) {
   return <div className="status-card error">{message}</div>;
 }
 
+function useRealtimeUpdates() {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [liveNotice, setLiveNotice] = useState('');
+
+  useEffect(() => {
+    const source = new EventSource(`${API_BASE}/api/events`);
+    let noticeTimer;
+
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'call.completed') {
+          const clientName = message.payload?.client_name || 'New prospect';
+          setRefreshKey((value) => value + 1);
+          setLiveNotice(`New completed call received: ${clientName}`);
+
+          clearTimeout(noticeTimer);
+          noticeTimer = window.setTimeout(() => {
+            setLiveNotice('');
+          }, 5000);
+        }
+      } catch {
+        // Ignore malformed events and keep the stream alive.
+      }
+    };
+
+    return () => {
+      clearTimeout(noticeTimer);
+      source.close();
+    };
+  }, []);
+
+  return { refreshKey, liveNotice };
+}
+
 function WorkspaceRoutes() {
+  const { refreshKey, liveNotice } = useRealtimeUpdates();
+
   return (
-    <AppShell>
+    <AppShell liveNotice={liveNotice}>
       <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/calls" element={<CallsPage />} />
-        <Route path="/calls/:callId" element={<CallDetailPage />} />
+        <Route path="/" element={<DashboardPage refreshKey={refreshKey} />} />
+        <Route path="/calls" element={<CallsPage refreshKey={refreshKey} />} />
+        <Route path="/calls/:callId" element={<CallDetailPage refreshKey={refreshKey} />} />
         <Route path="/platforms/:platform" element={<PlatformPage />} />
-        <Route path="/lead-360" element={<Lead360Page />} />
-        <Route path="/leads/:leadId" element={<LeadDetailPage />} />
+        <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />
+        <Route path="/leads/:leadId" element={<LeadDetailPage refreshKey={refreshKey} />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
