@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import initSqlJs from 'sql.js';
+import { runMigrations } from './migrations/index.js';
 import { activities, calls, devices, leads, users } from './seedData.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,10 +20,14 @@ if (!fs.existsSync(dir)) {
 
 let db;
 
-function persistDb() {
+export function persistDb() {
   if (!db) return;
   const bytes = db.export();
   fs.writeFileSync(dbPath, Buffer.from(bytes));
+}
+
+function run(query, params = []) {
+  db.run(query, params);
 }
 
 function all(query, params = []) {
@@ -113,8 +118,20 @@ export async function initializeDb() {
     );
   `);
 
+  // Versioned migrations (webhook_events, campaign_events, indexes).
+  runMigrations(db, { persist: persistDb });
+
   const row = get('SELECT COUNT(*) AS count FROM calls');
-  if ((row?.count ?? 0) > 0) return;
+  if ((row?.count ?? 0) === 0) {
+    seedLocalData();
+  }
+
+  // Mark/copy old campaign activities into campaign_events as is_seeded=1 (idempotent).
+  backfillSeededCampaignEvents();
+  persistDb();
+}
+
+function seedLocalData() {
 
   const insertUser = db.prepare(
     'INSERT INTO users (id, name, email, role) VALUES (?, ?, ?, ?)',
@@ -196,8 +213,52 @@ export async function initializeDb() {
     ]);
   });
   insertActivity.free();
+}
 
-  persistDb();
+function inferSeededEventType(title, detail) {
+  const text = `${title || ''} ${detail || ''}`.toLowerCase();
+  if (text.includes('click')) return 'clicked';
+  if (text.includes('open')) return 'opened';
+  if (text.includes('reply') || text.includes('replied')) return 'replied';
+  if (text.includes('bounce')) return 'bounced';
+  if (text.includes('sent') || text.includes('send')) return 'sent';
+  if (text.includes('no engagement')) return 'opened';
+  return 'opened';
+}
+
+/** Copy platform=campaign activities into campaign_events with is_seeded=1. */
+export function backfillSeededCampaignEvents() {
+  const activityRows = all(
+    `SELECT a.id, a.lead_id, a.title, a.detail, a.created_at,
+            l.client_name, l.email, l.client_phone
+     FROM activities a
+     LEFT JOIN leads l ON l.id = a.lead_id
+     WHERE a.platform = 'campaign'`,
+  );
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO campaign_events
+     (id, external_id, channel, source, lead_id, lead_name, lead_email, lead_phone,
+      campaign_name, event_type, title, description, occurred_at, is_seeded)
+     VALUES (?, ?, 'email', 'seed', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+  );
+
+  for (const row of activityRows) {
+    insert.run([
+      `ce-seed-${row.id}`,
+      `seed:${row.id}`,
+      row.lead_id || null,
+      row.client_name || null,
+      row.email ? String(row.email).trim().toLowerCase() : null,
+      row.client_phone || null,
+      'Seeded campaign',
+      inferSeededEventType(row.title, row.detail),
+      row.title || 'Campaign activity',
+      row.detail || '',
+      row.created_at || new Date().toISOString(),
+    ]);
+  }
+  insert.free();
 }
 
 function buildWhere({ search = '', platform = '', stage = '' }) {
@@ -323,4 +384,170 @@ export function listActivities(platform = '') {
 
   query += ' ORDER BY a.created_at DESC';
   return all(query, params);
+}
+
+export function findLeadByEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  return get(
+    `SELECT * FROM leads
+     WHERE lower(trim(email)) = ?
+     LIMIT 1`,
+    [normalized],
+  );
+}
+
+export function insertWebhookEvent({ id, source, payload, receivedAt, processed = 0, error = null }) {
+  run(
+    `INSERT INTO webhook_events (id, source, payload, received_at, processed, error)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, source, payload, receivedAt, processed, error],
+  );
+}
+
+export function markWebhookProcessed(id, { processed = 1, error = null } = {}) {
+  run(
+    `UPDATE webhook_events
+     SET processed = ?, error = ?
+     WHERE id = ?`,
+    [processed, error, id],
+  );
+}
+
+export function listWebhookEvents({ source = '', limit = 20 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 200);
+  const params = [];
+  let query = `SELECT id, source, payload, received_at, processed, error FROM webhook_events`;
+
+  if (source) {
+    query += ' WHERE source = ?';
+    params.push(source);
+  }
+
+  query += ' ORDER BY received_at DESC LIMIT ?';
+  params.push(safeLimit);
+  return all(query, params).map((row) => {
+    let parsed = row.payload;
+    try {
+      parsed = JSON.parse(row.payload);
+    } catch {
+      // keep raw string
+    }
+    return { ...row, payload: parsed };
+  });
+}
+
+export function getLatestWebhookEvent(source = 'manyreach') {
+  return listWebhookEvents({ source, limit: 1 })[0] || null;
+}
+
+/**
+ * INSERT OR IGNORE on external_id uniqueness.
+ * Returns { inserted, duplicate, id }.
+ */
+export function insertCampaignEvent(event) {
+  const before = get(
+    'SELECT id FROM campaign_events WHERE external_id = ? LIMIT 1',
+    [event.externalId],
+  );
+  if (before) {
+    return { inserted: false, duplicate: true, id: before.id };
+  }
+
+  run(
+    `INSERT OR IGNORE INTO campaign_events
+     (id, external_id, channel, source, lead_id, lead_name, lead_email, lead_phone,
+      campaign_name, event_type, title, description, occurred_at, is_seeded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      event.id,
+      event.externalId,
+      event.channel || 'email',
+      event.source || 'manyreach',
+      event.leadId || null,
+      event.leadName || null,
+      event.leadEmail || null,
+      event.leadPhone || null,
+      event.campaignName || null,
+      event.eventType,
+      event.title || null,
+      event.description || null,
+      event.occurredAt,
+      event.isSeeded ? 1 : 0,
+    ],
+  );
+
+  const after = get(
+    'SELECT id FROM campaign_events WHERE external_id = ? LIMIT 1',
+    [event.externalId],
+  );
+
+  return {
+    inserted: Boolean(after) && after.id === event.id,
+    duplicate: Boolean(after) && after.id !== event.id,
+    id: after?.id || event.id,
+  };
+}
+
+export function countRealCampaignEvents() {
+  const row = get(
+    `SELECT COUNT(*) AS count FROM campaign_events WHERE is_seeded = 0`,
+  );
+  return row?.count ?? 0;
+}
+
+export function listCampaignFeed({ limit = 50, since = '' } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const showSeeded =
+    String(process.env.SHOW_SEEDED_CAMPAIGNS || 'false').toLowerCase() === 'true';
+
+  const conditions = ['1=1'];
+  const params = [];
+
+  if (!showSeeded) {
+    conditions.push('is_seeded = 0');
+  }
+
+  if (since) {
+    conditions.push('occurred_at > ?');
+    params.push(String(since));
+  }
+
+  const rows = all(
+    `SELECT
+      id,
+      lead_id,
+      lead_name,
+      lead_phone AS phone,
+      lead_email AS email,
+      campaign_name,
+      event_type,
+      title,
+      description,
+      occurred_at,
+      is_seeded,
+      source,
+      channel
+     FROM campaign_events
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY occurred_at DESC
+     LIMIT ?`,
+    [...params, safeLimit],
+  );
+
+  return {
+    items: rows,
+    meta: {
+      showSeeded,
+      realEventCount: countRealCampaignEvents(),
+      live: countRealCampaignEvents() > 0,
+    },
+  };
+}
+
+/** Test helper: wipe only Manyreach-related rows without touching core seed tables. */
+export function resetManyreachTestData() {
+  run(`DELETE FROM campaign_events WHERE is_seeded = 0`);
+  run(`DELETE FROM webhook_events WHERE source = 'manyreach'`);
+  persistDb();
 }

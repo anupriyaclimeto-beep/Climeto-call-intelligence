@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -39,15 +39,15 @@ const navItems = [
 const platformCopy = {
   whatsapp: {
     title: 'WhatsApp',
-    description: 'Call complete hote hi non-scoring follow-up yahan track ho sakta hai.',
+    description: 'Track non-scoring follow-ups as soon as calls are completed.',
   },
   email: {
     title: 'Email',
-    description: 'Drafts, promised documents aur follow-up email readiness ko yahan surface kiya gaya hai.',
+    description: 'Surfaces drafts, promised documents, and follow-up email readiness.',
   },
   campaign: {
     title: 'Campaigns',
-    description: 'Lead engagement aur campaign touchpoints ko calls ke saath align karne ke liye.',
+    description: 'Align lead engagement and campaign touchpoints with calls.',
   },
 };
 
@@ -166,7 +166,7 @@ function AppShell({ children }) {
           <ShieldCheck size={18} />
           <div>
             <strong>Live-safe mode</strong>
-            <p>Yeh repo local SQLite aur seeded data par chal raha hai. Live systems untouched hain.</p>
+            <p>Running on local SQLite and seeded data. Live systems remain untouched.</p>
           </div>
         </div>
       </aside>
@@ -203,8 +203,8 @@ function DashboardPage() {
           <div className="eyebrow">7-day foundation</div>
           <h3>Calls-first working cockpit</h3>
           <p>
-            Yeh phase calls, promises, next actions aur platform follow-up ko ek jagah visible karta
-            hai. Zoho ko abhi destination boundary rakha gaya hai, hard dependency nahi.
+            Consolidates calls, promises, next actions, and platform follow-ups in one place.
+            Zoho is currently maintained as a destination boundary, not a hard dependency.
           </p>
         </div>
         <div className="hero-badges">
@@ -228,7 +228,7 @@ function DashboardPage() {
           <div className="section-head">
             <div>
               <h3>Recent Calls</h3>
-              <p>Who called whom, kya baat hui, aur next step kya hai.</p>
+              <p>Who called whom, what was discussed, and what the next step is.</p>
             </div>
             <Link className="text-link" to="/calls">
               View all
@@ -261,7 +261,7 @@ function DashboardPage() {
           <div className="section-head">
             <div>
               <h3>Platform Activity Feed</h3>
-              <p>Scoring ke bina bhi jo follow-up actions chahiye woh yahan visible hain.</p>
+              <p>Key follow-up actions required, accessible even without scoring.</p>
             </div>
           </div>
 
@@ -441,7 +441,7 @@ function CallDetailPage() {
               <div className="section-head">
                 <div>
                   <h3>Business Outcome</h3>
-                  <p>Call ka summary aur commitment capture.</p>
+                  <p>Call summary and captured commitments.</p>
                 </div>
               </div>
               <div className="info-block">
@@ -458,7 +458,7 @@ function CallDetailPage() {
               <div className="section-head">
                 <div>
                   <h3>Score Card</h3>
-                  <p>Training async rahegi, but score visibility yahan milegi.</p>
+                  <p>Coaching remains asynchronous, with score visibility provided here.</p>
                 </div>
               </div>
               <ScoreCard score={call.score} />
@@ -470,7 +470,7 @@ function CallDetailPage() {
               <div className="section-head">
                 <div>
                   <h3>Lead Context</h3>
-                  <p>Lead 360 view ke liye direct bridge.</p>
+                  <p>Direct bridge to the Lead 360 view.</p>
                 </div>
                 {lead ? (
                   <Link className="text-link" to={`/leads/${lead.id}`}>
@@ -508,7 +508,7 @@ function CallDetailPage() {
               <div className="section-head">
                 <div>
                   <h3>Related Platform Activities</h3>
-                  <p>Call ke baad email / WhatsApp / campaign trace.</p>
+                  <p>Follow-up activity trail across email, WhatsApp, and campaigns.</p>
                 </div>
               </div>
 
@@ -548,7 +548,7 @@ function Lead360Page() {
         <div className="section-head">
           <div>
             <h3>Merged Lead Story</h3>
-            <p>Calls alag tab me rahenge, par lead timeline yahan merge hogi.</p>
+            <p>Calls stay in their own tab, while the unified lead timeline is merged here.</p>
           </div>
         </div>
 
@@ -626,7 +626,7 @@ function LeadDetailPage() {
               <div className="section-head">
                 <div>
                   <h3>Calls</h3>
-                  <p>Lead ke saath huye recent calls.</p>
+                  <p>Recent calls associated with this lead.</p>
                 </div>
               </div>
               <div className="stack-list compact">
@@ -674,12 +674,162 @@ function LeadDetailPage() {
   );
 }
 
+function eventTypeBadge(eventType) {
+  const map = {
+    replied: { label: 'Reply', tone: 'good' },
+    clicked: { label: 'Click', tone: 'mid' },
+    opened: { label: 'Open', tone: 'neutral' },
+    bounced: { label: 'Bounce', tone: 'low' },
+    sent: { label: 'Sent', tone: 'neutral' },
+  };
+  return map[eventType] || { label: eventType || 'Event', tone: 'neutral' };
+}
+
+function CampaignsFeedPage() {
+  const [items, setItems] = useState([]);
+  const [meta, setMeta] = useState({ live: false });
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState('');
+  const [newIds, setNewIds] = useState(() => new Set());
+  const seenIdsRef = useRef(new Set());
+  const bootstrappedRef = useRef(false);
+
+  const loadFeed = useCallback(async ({ silent } = {}) => {
+    try {
+      if (!silent) setLoading(true);
+      const response = await fetch(`${API_BASE}/api/campaigns/feed?limit=50`);
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      const json = await response.json();
+      const nextItems = Array.isArray(json.data) ? json.data : [];
+
+      setMeta(json.meta || { live: false });
+      setError('');
+
+      if (!bootstrappedRef.current) {
+        bootstrappedRef.current = true;
+        seenIdsRef.current = new Set(nextItems.map((item) => item.id));
+        setNewIds(new Set());
+      } else {
+        const fresh = nextItems
+          .filter((item) => !seenIdsRef.current.has(item.id))
+          .map((item) => item.id);
+        if (fresh.length) {
+          fresh.forEach((id) => seenIdsRef.current.add(id));
+          setNewIds((prev) => {
+            const merged = new Set(prev);
+            fresh.forEach((id) => merged.add(id));
+            return merged;
+          });
+        }
+      }
+
+      setItems(nextItems);
+    } catch (err) {
+      setError(err.message || 'Failed to load campaign feed');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      await fetch(`${API_BASE}/api/campaigns/sync`);
+      await loadFeed({ silent: false });
+    } catch (err) {
+      setError(err.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    loadFeed({ silent: false });
+    const timer = setInterval(() => {
+      if (!cancelled) loadFeed({ silent: true });
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [loadFeed]);
+
+  return (
+    <section className="page-stack">
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Platform Feed</div>
+            <h3>Campaigns</h3>
+            <p>Real-time Manyreach email events (reply, open, click, sent, bounce) appear here.</p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${meta.live ? 'good' : 'neutral'}`}>
+              {meta.live ? 'Live: Manyreach' : 'Waiting for live events'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.35rem 0.75rem', fontSize: '0.82rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Now'}
+            </button>
+          </div>
+        </div>
+
+        {loading && items.length === 0 ? <LoadingBlock label="Loading campaign activity..." /> : null}
+        {error ? <ErrorCard message={error} /> : null}
+
+        <div className="stack-list">
+          {items.map((item) => {
+            const badge = eventTypeBadge(item.event_type);
+            const isNew = newIds.has(item.id);
+            return (
+              <div key={item.id} className={`list-row campaign-row${isNew ? ' is-new' : ''}`}>
+                <div>
+                  <strong>{item.lead_name || 'Unknown lead'}</strong>
+                  <p>{item.phone || '-'}</p>
+                  <p className="muted-line">{item.email || 'No email'}</p>
+                </div>
+                <div>
+                  <div className="row-actions" style={{ marginBottom: '0.45rem' }}>
+                    <span className={`pill ${badge.tone}`}>{badge.label}</span>
+                    {isNew ? <span className="pill good">New</span> : null}
+                    {item.campaign_name ? <span className="pill neutral">{item.campaign_name}</span> : null}
+                  </div>
+                  <strong>{item.title}</strong>
+                  <p>{item.description}</p>
+                </div>
+                <div className="meta-align">{formatDateTime(item.occurred_at)}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {!loading && !error && items.length === 0 ? (
+          <EmptyBlock label="No campaign activity yet" />
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
 function PlatformPage() {
   const { platform } = useParams();
   const current = platformCopy[platform] || {
     title: 'Platform',
     description: 'Future connector placeholder',
   };
+
+  if (platform === 'campaign') {
+    return <CampaignsFeedPage />;
+  }
+
   const state = useAsync(() => api(`/api/activities?platform=${platform}`), [platform]);
 
   return (
@@ -731,7 +881,7 @@ function SettingsPage() {
           <div>
             <div className="eyebrow">Zoho boundary</div>
             <h3>Navigation first, sync later</h3>
-            <p>Phase 1 me UI ko Zoho auth repair se block nahi kiya gaya hai.</p>
+            <p>In Phase 1, UI workflows are not blocked by Zoho authentication maintenance.</p>
           </div>
         </div>
 
@@ -752,7 +902,7 @@ function SettingsPage() {
         <div className="section-head">
           <div>
             <h3>What this repo does now</h3>
-            <p>Current milestone boundaries clearly separated hain.</p>
+            <p>Current milestone boundaries are clearly delineated.</p>
           </div>
         </div>
 
@@ -766,7 +916,7 @@ function SettingsPage() {
           <div className="list-row">
             <div>
               <strong>Next</strong>
-              <p>Zoho auth repair ke baad note sync, task sync, aur stage sync backend bridge se.</p>
+              <p>Note sync, task sync, and stage sync via backend bridge once Zoho auth is repaired.</p>
             </div>
           </div>
         </div>

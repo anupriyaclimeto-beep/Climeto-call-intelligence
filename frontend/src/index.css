@@ -245,6 +245,17 @@ button {
   color: #c13838;
 }
 
+.muted-line {
+  color: #6d7a91;
+  font-size: 0.86rem;
+}
+
+.campaign-row.is-new {
+  border-color: #9fc0ff;
+  background: linear-gradient(180deg, #eef5ff 0%, #f9fbfe 70%);
+  box-shadow: 0 0 0 1px rgba(47, 109, 246, 0.12);
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
