@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "test": "node --test tests/manyreach.test.js",
+    "sync:manyreach": "node src/jobs/manyreachSyncSkeleton.js",
     "simulate:call": "node scripts/simulate_completed_call.js"
   },
   "keywords": [],
