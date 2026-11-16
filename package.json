@@ -1,0 +1,22 @@
+{
+  "name": "climeto-call-intelligence",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Climeto Intelligence Workspace",
+  "scripts": {
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build:frontend": "npm --prefix frontend run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anupriyaclimeto-beep/Climeto-call-intelligence.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/anupriyaclimeto-beep/Climeto-call-intelligence/issues"
+  },
+  "homepage": "https://github.com/anupriyaclimeto-beep/Climeto-call-intelligence#readme"
+}
