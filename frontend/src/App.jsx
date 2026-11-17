@@ -951,27 +951,35 @@ function ZohoAccountsPage({ refreshKey }) {
           </div>
         ) : null}
 
-        <div className="summary-grid" style={{ marginBottom: '1.2rem' }}>
-          <SummaryCard
-            label="Account User"
-            value={meta.user_name || 'Zoho User'}
-            subtext={meta.user_email || 'admin@climeto.com'}
-          />
-          <SummaryCard
-            label="Organization"
-            value={meta.org_name || 'Climeto Global Ltd'}
-            subtext={`Org ID: ${meta.org_id || '700192841'}`}
-          />
-          <SummaryCard
-            label="Account Role"
-            value={meta.role || 'Super Administrator'}
-            subtext={`ZUID: ${meta.zuid || '60029188471'}`}
-          />
-          <SummaryCard
-            label="Auth Server & Status"
-            value="accounts.zoho.in"
-            subtext={meta.status || 'Active Session'}
-          />
+        <div className="stats-grid" style={{ marginBottom: '1.25rem' }}>
+          <div className="stat-card">
+            <span>Account User</span>
+            <strong>{meta.user_name || 'Zoho User'}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              {meta.user_email || 'admin@climeto.com'}
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Organization</span>
+            <strong>{meta.org_name || 'Climeto Global Ltd'}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Org ID: {meta.org_id || '700192841'}
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Account Role</span>
+            <strong>{meta.role || 'Super Administrator'}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              ZUID: {meta.zuid || '60029188471'}
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Auth Server & Status</span>
+            <strong>accounts.zoho.in</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              {meta.status || 'Active Session'}
+            </p>
+          </div>
         </div>
 
         <div
@@ -1455,6 +1463,20 @@ function StatCard({ label, value }) {
     <article className="stat-card">
       <span>{label}</span>
       <strong>{value ?? '-'}</strong>
+    </article>
+  );
+}
+
+function SummaryCard({ label, value, subtext }) {
+  return (
+    <article className="stat-card">
+      <span>{label}</span>
+      <strong>{value ?? '-'}</strong>
+      {subtext ? (
+        <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+          {subtext}
+        </p>
+      ) : null}
     </article>
   );
 }
