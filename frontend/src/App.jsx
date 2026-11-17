@@ -9,6 +9,7 @@ import {
   Phone,
   Search,
   Settings,
+  ShieldCheck,
   Users,
 } from 'lucide-react';
 import {
