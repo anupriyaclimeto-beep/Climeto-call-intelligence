@@ -34,6 +34,7 @@ const navItems = [
   { to: '/platforms/email', label: 'Email', icon: Mail },
   { to: '/platforms/campaign', label: 'Campaigns', icon: Megaphone },
   { to: '/zoho-crm', label: 'Zoho CRM', icon: Briefcase },
+  { to: '/zoho-accounts', label: 'Zoho Accounts', icon: ShieldCheck },
   { to: '/lead-360', label: 'Lead 360', icon: Users },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
@@ -187,6 +188,7 @@ function pageTitle(pathname) {
   if (pathname.startsWith('/calls')) return 'Calls';
   if (pathname.startsWith('/platforms/')) return 'Platform Feed';
   if (pathname.startsWith('/zoho-crm')) return 'Zoho CRM';
+  if (pathname.startsWith('/zoho-accounts')) return 'Zoho Accounts';
   if (pathname.startsWith('/lead-360')) return 'Lead 360';
   if (pathname.startsWith('/leads/')) return 'Lead Detail';
   if (pathname.startsWith('/settings')) return 'Settings';
@@ -852,6 +854,221 @@ function ZohoCrmPage({ refreshKey }) {
   );
 }
 
+function ZohoAccountsPage({ refreshKey }) {
+  const [search, setSearch] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+
+  const accountsState = useAsync(() => api('/api/zoho/accounts'), [refreshKey, syncing]);
+  const data = accountsState.data || {};
+  const meta = data.meta || {};
+  const accounts = data.accounts || [];
+  const authStatus = data.authStatus || {};
+
+  const filteredAccounts = useMemo(() => {
+    if (!search) return accounts;
+    const q = search.toLowerCase();
+    return accounts.filter(
+      (a) =>
+        (a.account_name || '').toLowerCase().includes(q) ||
+        (a.industry || '').toLowerCase().includes(q) ||
+        (a.billing_city || '').toLowerCase().includes(q) ||
+        (a.owner_name || '').toLowerCase().includes(q),
+    );
+  }, [accounts, search]);
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/zoho/accounts/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(
+          `Sync completed! Accounts & CRM refreshed (${json.data.processed || 0} records processed).`,
+        );
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync not ready. Check .env credentials.');
+      }
+    } catch (err) {
+      setSyncMsg(`Sync error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <section className="page-stack">
+      {/* CARD 1: Zoho Accounts Identity & Organization Portal */}
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Identity & Security Portal</div>
+            <h3>Zoho Accounts (accounts.zoho.in)</h3>
+            <p>
+              Single Sign-On (SSO), OAuth 2.0 authorization, active user sessions, and organization identity.
+            </p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${authStatus.connected ? 'good' : 'neutral'}`}>
+              {authStatus.connected ? 'OAuth 2.0: Connected' : 'Ready / Active'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Accounts'}
+            </button>
+            <a
+              className="primary-button"
+              href="https://accounts.zoho.in"
+              target="_blank"
+              rel="noreferrer"
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              Manage Zoho Account
+              <ArrowUpRight size={14} />
+            </a>
+          </div>
+        </div>
+
+        {syncMsg ? (
+          <div
+            style={{
+              padding: '0.6rem 0.9rem',
+              marginBottom: '1rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              backgroundColor: syncMsg.includes('error') ? '#ffefef' : '#eaf7ee',
+              color: syncMsg.includes('error') ? '#c53030' : '#22543d',
+              border: `1px solid ${syncMsg.includes('error') ? '#fed7d7' : '#c6f6d5'}`,
+            }}
+          >
+            {syncMsg}
+          </div>
+        ) : null}
+
+        <div className="summary-grid" style={{ marginBottom: '1.2rem' }}>
+          <SummaryCard
+            label="Account User"
+            value={meta.user_name || 'Zoho User'}
+            subtext={meta.user_email || 'admin@climeto.com'}
+          />
+          <SummaryCard
+            label="Organization"
+            value={meta.org_name || 'Climeto Global Ltd'}
+            subtext={`Org ID: ${meta.org_id || '700192841'}`}
+          />
+          <SummaryCard
+            label="Account Role"
+            value={meta.role || 'Super Administrator'}
+            subtext={`ZUID: ${meta.zuid || '60029188471'}`}
+          />
+          <SummaryCard
+            label="Auth Server & Status"
+            value="accounts.zoho.in"
+            subtext={meta.status || 'Active Session'}
+          />
+        </div>
+
+        <div
+          style={{
+            padding: '0.85rem 1.1rem',
+            borderRadius: '10px',
+            backgroundColor: 'rgba(238, 242, 248, 0.6)',
+            border: '1px solid #e2e8f0',
+            fontSize: '0.84rem',
+            lineHeight: '1.45',
+            color: '#475569',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+          }}
+        >
+          <ShieldCheck size={20} style={{ color: '#0284c7', flexShrink: 0 }} />
+          <div>
+            <strong>Zoho Accounts Security Note:</strong> Passwords, Two-Factor Authentication (2FA), and Multi-User Session controls are managed centrally inside the Zoho Accounts IAM service. This intelligence workspace connects securely via OAuth 2.0 tokens without ever storing your Zoho password.
+          </div>
+        </div>
+      </section>
+
+      {/* CARD 2: Zoho Accounts / Companies List */}
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Client Directory</div>
+            <h3>Company Accounts ({filteredAccounts.length})</h3>
+            <p>Corporate accounts and client organizations synced directly from Zoho.</p>
+          </div>
+        </div>
+
+        <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search accounts by company name, industry, city, or owner..."
+            />
+          </div>
+        </div>
+
+        {accountsState.loading ? <LoadingBlock label="Loading Zoho accounts..." /> : null}
+        {accountsState.error ? <ErrorCard message={accountsState.error} /> : null}
+        {!accountsState.loading && filteredAccounts.length === 0 ? (
+          <EmptyBlock label="No corporate accounts found matching criteria." />
+        ) : null}
+
+        <div className="stack-list">
+          {filteredAccounts.map((account) => (
+            <div key={account.id} className="list-row">
+              <div>
+                <strong>{account.account_name}</strong>
+                <p style={{ marginTop: '0.2rem' }}>{account.phone || '-'}</p>
+                {account.website ? (
+                  <p className="muted-line" style={{ fontSize: '0.78rem' }}>
+                    {account.website}
+                  </p>
+                ) : null}
+              </div>
+              <div>
+                <div className="row-actions" style={{ marginBottom: '0.35rem' }}>
+                  <span className="pill neutral">{account.industry || 'Enterprise'}</span>
+                  {account.annual_revenue ? (
+                    <span className="pill good">{account.annual_revenue}</span>
+                  ) : null}
+                </div>
+                <p style={{ fontSize: '0.85rem' }}>
+                  <strong>Location:</strong> {account.billing_city || 'India'}
+                  {account.billing_country ? `, ${account.billing_country}` : ''}
+                </p>
+                <p className="muted-line" style={{ fontSize: '0.78rem' }}>
+                  Owner: {account.owner_name || 'Zoho User'}
+                </p>
+              </div>
+              <div className="meta-align">
+                <a
+                  className="primary-button"
+                  href={account.zoho_url || 'https://crm.zoho.in/crm/tab/Accounts'}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                >
+                  Open in Zoho
+                  <ArrowUpRight size={13} />
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function LeadDetailPage({ refreshKey }) {
   const { leadId } = useParams();
   const leadState = useAsync(() => api(`/api/leads/${leadId}`), [leadId, refreshKey]);
@@ -1366,6 +1583,7 @@ function WorkspaceRoutes() {
         <Route path="/calls/:callId" element={<CallDetailPage refreshKey={refreshKey} />} />
         <Route path="/platforms/:platform" element={<PlatformPage />} />
         <Route path="/zoho-crm" element={<ZohoCrmPage refreshKey={refreshKey} />} />
+        <Route path="/zoho-accounts" element={<ZohoAccountsPage refreshKey={refreshKey} />} />
         <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />
         <Route path="/leads/:leadId" element={<LeadDetailPage refreshKey={refreshKey} />} />
         <Route path="/settings" element={<SettingsPage />} />

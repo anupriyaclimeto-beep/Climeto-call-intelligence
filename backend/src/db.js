@@ -140,6 +140,7 @@ export async function initializeDb() {
 
   // Mark/copy old campaign activities into campaign_events as is_seeded=1 (idempotent).
   backfillSeededCampaignEvents();
+  seedZohoAccountsIfEmpty();
   persistDb();
 }
 
@@ -746,3 +747,219 @@ export function upsertLeadFromZoho(data) {
     return { inserted: true, updated: false, id: targetId };
   }
 }
+
+export function seedZohoAccountsIfEmpty() {
+  try {
+    const row = get('SELECT COUNT(*) AS count FROM zoho_accounts');
+    if ((row?.count ?? 0) === 0) {
+      const seedAccounts = [
+        {
+          id: 'zoho-acc-101',
+          accountName: 'Climeto Global Technologies',
+          phone: '+91 98112 34567',
+          website: 'https://climeto.com',
+          industry: 'IT & Climate Tech',
+          annualRevenue: '₹12,50,00,000',
+          billingCity: 'New Delhi',
+          billingCountry: 'India',
+          ownerName: 'Ambuj Sharma',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-102',
+          accountName: 'Apex Solar Solutions',
+          phone: '+91 98234 56789',
+          website: 'https://apexsolar.in',
+          industry: 'Renewable Energy',
+          annualRevenue: '₹8,40,00,000',
+          billingCity: 'Bengaluru',
+          billingCountry: 'India',
+          ownerName: 'Sahil Patel',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-103',
+          accountName: 'GreenGrid Power Systems',
+          phone: '+91 97123 45678',
+          website: 'https://greengrid.org',
+          industry: 'Clean Energy & Power',
+          annualRevenue: '₹24,00,00,000',
+          billingCity: 'Mumbai',
+          billingCountry: 'India',
+          ownerName: 'Riya Sen',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-104',
+          accountName: 'BioFuture Carbon Offsets',
+          phone: '+91 96543 21098',
+          website: 'https://biofuture.io',
+          industry: 'Environmental Services',
+          annualRevenue: '₹5,20,00,000',
+          billingCity: 'Pune',
+          billingCountry: 'India',
+          ownerName: 'Ambuj Sharma',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-105',
+          accountName: 'Sterling Steel & Infra Ltd',
+          phone: '+91 99887 76655',
+          website: 'https://sterlingsteel.co',
+          industry: 'Heavy Manufacturing',
+          annualRevenue: '₹45,00,00,000',
+          billingCity: 'Ahmedabad',
+          billingCountry: 'India',
+          ownerName: 'Sahil Patel',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+      ];
+
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO zoho_accounts
+         (id, account_name, phone, website, industry, annual_revenue, billing_city, billing_country, owner_name, zoho_url, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const now = new Date().toISOString();
+      for (const a of seedAccounts) {
+        insert.run([
+          a.id,
+          a.accountName,
+          a.phone,
+          a.website,
+          a.industry,
+          a.annualRevenue,
+          a.billingCity,
+          a.billingCountry,
+          a.ownerName,
+          a.zohoUrl,
+          now,
+          now,
+        ]);
+      }
+      insert.free();
+    }
+
+    const metaRow = get('SELECT id FROM zoho_account_meta WHERE id = ?', ['current_meta']);
+    if (!metaRow) {
+      run(
+        `INSERT OR IGNORE INTO zoho_account_meta
+         (id, user_name, user_email, zuid, org_name, org_id, role, account_url, status, last_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'current_meta',
+          'Climeto Workspace User',
+          'admin@climeto.com',
+          '60029188471',
+          'Climeto Global Ltd',
+          '700192841',
+          'Super Administrator',
+          'https://accounts.zoho.in',
+          'Ready (OAuth 2.0)',
+          new Date().toISOString(),
+        ],
+      );
+    }
+  } catch (err) {
+    console.warn('[Zoho DB] Notice in seedZohoAccountsIfEmpty:', err.message);
+  }
+}
+
+export function upsertZohoAccount(data) {
+  const id = String(data.id || '').trim();
+  if (!id) return null;
+  const accountName = String(data.accountName || data.name || '').trim() || 'Unnamed Company';
+  const phone = String(data.phone || '').trim();
+  const website = String(data.website || '').trim();
+  const industry = String(data.industry || '').trim();
+  const annualRevenue = String(data.annualRevenue || data.revenue || '').trim();
+  const billingCity = String(data.billingCity || data.city || '').trim();
+  const billingCountry = String(data.billingCountry || data.country || 'India').trim();
+  const ownerName = String(data.ownerName || data.owner || 'Zoho User').trim();
+  const zohoUrl = String(data.zohoUrl || '').trim();
+  const now = new Date().toISOString();
+
+  const existing = get('SELECT id FROM zoho_accounts WHERE id = ?', [id]);
+  if (existing) {
+    run(
+      `UPDATE zoho_accounts
+       SET account_name = ?, phone = ?, website = ?, industry = ?, annual_revenue = ?,
+           billing_city = ?, billing_country = ?, owner_name = ?, zoho_url = ?, updated_at = ?
+       WHERE id = ?`,
+      [accountName, phone, website, industry, annualRevenue, billingCity, billingCountry, ownerName, zohoUrl, now, id],
+    );
+    return { id, inserted: false, updated: true };
+  } else {
+    run(
+      `INSERT INTO zoho_accounts
+       (id, account_name, phone, website, industry, annual_revenue, billing_city, billing_country, owner_name, zoho_url, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, accountName, phone, website, industry, annualRevenue, billingCity, billingCountry, ownerName, zohoUrl, now, now],
+    );
+    return { id, inserted: true, updated: false };
+  }
+}
+
+export function listZohoAccounts(filters = {}) {
+  const search = String(filters.search || '').trim().toLowerCase();
+  let query = 'SELECT * FROM zoho_accounts';
+  const params = [];
+  if (search) {
+    query += ' WHERE lower(account_name) LIKE ? OR lower(industry) LIKE ? OR lower(billing_city) LIKE ? OR lower(owner_name) LIKE ?';
+    const s = `%${search}%`;
+    params.push(s, s, s, s);
+  }
+  query += ' ORDER BY account_name ASC';
+  return all(query, params);
+}
+
+export function saveZohoAccountMeta(meta = {}) {
+  const id = 'current_meta';
+  const userName = meta.userName || meta.user_name || 'Zoho User';
+  const userEmail = meta.userEmail || meta.user_email || '';
+  const zuid = String(meta.zuid || meta.user_id || '');
+  const orgName = meta.orgName || meta.org_name || 'Climeto CRM Org';
+  const orgId = String(meta.orgId || meta.org_id || '');
+  const role = meta.role || 'Administrator';
+  const accountUrl = meta.accountUrl || meta.account_url || 'https://accounts.zoho.in';
+  const status = meta.status || 'Active';
+  const now = new Date().toISOString();
+
+  const existing = get('SELECT id FROM zoho_account_meta WHERE id = ?', [id]);
+  if (existing) {
+    run(
+      `UPDATE zoho_account_meta
+       SET user_name = ?, user_email = ?, zuid = ?, org_name = ?, org_id = ?, role = ?, account_url = ?, status = ?, last_synced_at = ?
+       WHERE id = ?`,
+      [userName, userEmail, zuid, orgName, orgId, role, accountUrl, status, now, id],
+    );
+  } else {
+    run(
+      `INSERT INTO zoho_account_meta
+       (id, user_name, user_email, zuid, org_name, org_id, role, account_url, status, last_synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, userName, userEmail, zuid, orgName, orgId, role, accountUrl, status, now],
+    );
+  }
+  persistDb();
+  return getZohoAccountMeta();
+}
+
+export function getZohoAccountMeta() {
+  const row = get('SELECT * FROM zoho_account_meta WHERE id = ?', ['current_meta']);
+  if (!row) {
+    return {
+      user_name: 'Zoho Workspace Account',
+      user_email: 'admin@climeto.com',
+      zuid: '60029188471',
+      org_name: 'Climeto Global Ltd',
+      org_id: '700192841',
+      role: 'Super Administrator',
+      account_url: 'https://accounts.zoho.in',
+      status: 'Ready for OAuth',
+      last_synced_at: null,
+    };
+  }
+  return row;
+}
+

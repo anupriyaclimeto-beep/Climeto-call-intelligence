@@ -14,7 +14,7 @@ import {
 import { receiveManyreachWebhook } from './services/manyreachWebhook.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
 import { getZohoSettings } from './services/zohoBridge.js';
-import { syncZohoCrm } from './services/zohoSync.js';
+import { syncZohoCrm, syncZohoAccounts, getZohoAccountsPayload } from './services/zohoSync.js';
 
 function requireManyreachToken(req, res) {
   const expected = process.env.MANYREACH_WEBHOOK_SECRET || '';
@@ -174,6 +174,20 @@ export function createApp() {
   app.all('/api/settings/zoho/sync', async (_req, res) => {
     try {
       const result = await syncZohoCrm();
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get('/api/zoho/accounts', (req, res) => {
+    const search = String(req.query.search || '').trim();
+    return res.json({ success: true, data: getZohoAccountsPayload({ search }) });
+  });
+
+  app.all('/api/zoho/accounts/sync', async (_req, res) => {
+    try {
+      const result = await syncZohoAccounts();
       return res.json({ success: true, data: result });
     } catch (err) {
       return res.status(500).json({ success: false, message: err.message });
