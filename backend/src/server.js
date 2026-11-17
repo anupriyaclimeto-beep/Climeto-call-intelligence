@@ -6,6 +6,7 @@ import { createApp } from './createApp.js';
 import { createSupabaseBridge } from './services/supabaseBridge.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
 import { syncZohoCrm } from './services/zohoSync.js';
+import { syncZohoEmails } from './services/zohoEmailSync.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,11 +133,15 @@ app.listen(port, () => {
 
   if (zohoSyncEnabled && zohoHasAuth) {
     const zohoIntervalSec = Math.max(Number(process.env.ZOHO_SYNC_INTERVAL_SEC || 300), 30);
-    console.log(`[Zoho CRM] Auto-sync enabled. Polling every ${zohoIntervalSec}s.`);
+    console.log(`[Zoho CRM & Emails] Auto-sync enabled. Polling every ${zohoIntervalSec}s.`);
 
     syncZohoCrm()
       .then((res) => console.log('[Zoho CRM] Initial sync complete:', res))
       .catch((err) => console.warn('[Zoho CRM] Initial sync error:', err.message));
+
+    syncZohoEmails()
+      .then((res) => console.log('[Zoho Emails] Initial sync complete:', res))
+      .catch((err) => console.warn('[Zoho Emails] Initial sync error:', err.message));
 
     setInterval(() => {
       syncZohoCrm()
@@ -146,6 +151,14 @@ app.listen(port, () => {
           }
         })
         .catch((err) => console.warn('[Zoho CRM] Periodic sync error:', err.message));
+
+      syncZohoEmails()
+        .then((res) => {
+          if (res?.inserted > 0 || res?.updated > 0) {
+            console.log(`[Zoho Emails] Synced ${res.inserted} new, ${res.updated} updated records.`);
+          }
+        })
+        .catch((err) => console.warn('[Zoho Emails] Periodic sync error:', err.message));
     }, zohoIntervalSec * 1000);
   }
 });
