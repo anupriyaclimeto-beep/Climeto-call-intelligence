@@ -38,7 +38,7 @@ function execute(query, params = []) {
   statement.free();
 }
 
-function all(query, params = []) {
+export function all(query, params = []) {
   const statement = db.prepare(query);
   statement.bind(params);
   const rows = [];
@@ -140,6 +140,8 @@ export async function initializeDb() {
 
   // Mark/copy old campaign activities into campaign_events as is_seeded=1 (idempotent).
   backfillSeededCampaignEvents();
+  seedZohoAccountsIfEmpty();
+  seedZohoEmailsIfEmpty();
   persistDb();
 }
 
@@ -315,7 +317,14 @@ export function getDashboardData() {
      LIMIT 5`,
   );
 
-  return { stats, recent };
+  const recentLeads = all(
+    `SELECT id, client_name, client_phone, company, stage, hotness, latest_summary, next_action, zoho_url
+     FROM leads
+     ORDER BY rowid DESC
+     LIMIT 6`,
+  );
+
+  return { stats, recent, recentLeads };
 }
 
 export function listCalls(filters = {}) {
@@ -691,5 +700,539 @@ export function createCompletedCall(payload = {}) {
 
   persistDb();
   return getCallById(callId);
-
 }
+
+export function upsertLeadFromZoho(data) {
+  const phone = sanitizePhone(data.clientPhone || data.phone || '');
+  const email = String(data.email || '').trim().toLowerCase();
+  const id = String(data.id || '').trim();
+
+  let existing = null;
+  if (id) {
+    existing = get('SELECT * FROM leads WHERE id = ? LIMIT 1', [id]);
+  }
+  if (!existing && phone) {
+    existing = get('SELECT * FROM leads WHERE client_phone = ? LIMIT 1', [phone]);
+  }
+  if (!existing && email) {
+    existing = get('SELECT * FROM leads WHERE lower(trim(email)) = ? LIMIT 1', [email]);
+  }
+
+  const targetId = existing?.id || id || `zoho-lead-${randomUUID().slice(0, 8)}`;
+  const clientName = data.clientName || existing?.client_name || 'Zoho Lead';
+  const company = data.company || existing?.company || clientName;
+  const stage = data.stage || existing?.stage || 'Contacted';
+  const ownerId = data.ownerId || existing?.owner_id || 'Zoho User';
+  const hotness = data.hotness || existing?.hotness || 'warm';
+  const latestSummary = data.latestSummary || existing?.latest_summary || 'Synced from Zoho CRM';
+  const nextAction = data.nextAction || existing?.next_action || 'Follow up with lead';
+  const zohoUrl = data.zohoUrl || existing?.zoho_url || '';
+
+  if (existing) {
+    run(
+      `UPDATE leads
+       SET client_name = ?, client_phone = COALESCE(NULLIF(?, ''), client_phone),
+           email = COALESCE(NULLIF(?, ''), email), company = ?, stage = ?,
+           owner_id = ?, hotness = ?, zoho_url = COALESCE(NULLIF(?, ''), zoho_url)
+       WHERE id = ?`,
+      [clientName, phone, email, company, stage, ownerId, hotness, zohoUrl, existing.id]
+    );
+    return { inserted: false, updated: true, id: existing.id };
+  } else {
+    run(
+      `INSERT INTO leads
+       (id, client_name, client_phone, email, company, stage, owner_id, hotness, latest_summary, next_action, zoho_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [targetId, clientName, phone, email, company, stage, ownerId, hotness, latestSummary, nextAction, zohoUrl]
+    );
+    return { inserted: true, updated: false, id: targetId };
+  }
+}
+
+export function seedZohoAccountsIfEmpty() {
+  try {
+    const row = get('SELECT COUNT(*) AS count FROM zoho_accounts');
+    if ((row?.count ?? 0) === 0) {
+      const seedAccounts = [
+        {
+          id: 'zoho-acc-101',
+          accountName: 'Climeto Global Technologies',
+          phone: '+91 98112 34567',
+          website: 'https://climeto.com',
+          industry: 'IT & Climate Tech',
+          annualRevenue: '₹12,50,00,000',
+          billingCity: 'New Delhi',
+          billingCountry: 'India',
+          ownerName: 'Ambuj Sharma',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-102',
+          accountName: 'Apex Solar Solutions',
+          phone: '+91 98234 56789',
+          website: 'https://apexsolar.in',
+          industry: 'Renewable Energy',
+          annualRevenue: '₹8,40,00,000',
+          billingCity: 'Bengaluru',
+          billingCountry: 'India',
+          ownerName: 'Sahil Patel',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-103',
+          accountName: 'GreenGrid Power Systems',
+          phone: '+91 97123 45678',
+          website: 'https://greengrid.org',
+          industry: 'Clean Energy & Power',
+          annualRevenue: '₹24,00,00,000',
+          billingCity: 'Mumbai',
+          billingCountry: 'India',
+          ownerName: 'Riya Sen',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-104',
+          accountName: 'BioFuture Carbon Offsets',
+          phone: '+91 96543 21098',
+          website: 'https://biofuture.io',
+          industry: 'Environmental Services',
+          annualRevenue: '₹5,20,00,000',
+          billingCity: 'Pune',
+          billingCountry: 'India',
+          ownerName: 'Ambuj Sharma',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+        {
+          id: 'zoho-acc-105',
+          accountName: 'Sterling Steel & Infra Ltd',
+          phone: '+91 99887 76655',
+          website: 'https://sterlingsteel.co',
+          industry: 'Heavy Manufacturing',
+          annualRevenue: '₹45,00,00,000',
+          billingCity: 'Ahmedabad',
+          billingCountry: 'India',
+          ownerName: 'Sahil Patel',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Accounts',
+        },
+      ];
+
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO zoho_accounts
+         (id, account_name, phone, website, industry, annual_revenue, billing_city, billing_country, owner_name, zoho_url, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const now = new Date().toISOString();
+      for (const a of seedAccounts) {
+        insert.run([
+          a.id,
+          a.accountName,
+          a.phone,
+          a.website,
+          a.industry,
+          a.annualRevenue,
+          a.billingCity,
+          a.billingCountry,
+          a.ownerName,
+          a.zohoUrl,
+          now,
+          now,
+        ]);
+      }
+      insert.free();
+    }
+
+    const metaRow = get('SELECT id FROM zoho_account_meta WHERE id = ?', ['current_meta']);
+    if (!metaRow) {
+      run(
+        `INSERT OR IGNORE INTO zoho_account_meta
+         (id, user_name, user_email, zuid, org_name, org_id, role, account_url, status, last_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'current_meta',
+          'Climeto Workspace User',
+          'admin@climeto.com',
+          '60029188471',
+          'Climeto Global Ltd',
+          '700192841',
+          'Super Administrator',
+          'https://accounts.zoho.in',
+          'Ready (OAuth 2.0)',
+          new Date().toISOString(),
+        ],
+      );
+    }
+  } catch (err) {
+    console.warn('[Zoho DB] Notice in seedZohoAccountsIfEmpty:', err.message);
+  }
+}
+
+export function upsertZohoAccount(data) {
+  const id = String(data.id || '').trim();
+  if (!id) return null;
+  const accountName = String(data.accountName || data.name || '').trim() || 'Unnamed Company';
+  const phone = String(data.phone || '').trim();
+  const website = String(data.website || '').trim();
+  const industry = String(data.industry || '').trim();
+  const annualRevenue = String(data.annualRevenue || data.revenue || '').trim();
+  const billingCity = String(data.billingCity || data.city || '').trim();
+  const billingCountry = String(data.billingCountry || data.country || 'India').trim();
+  const ownerName = String(data.ownerName || data.owner || 'Zoho User').trim();
+  const zohoUrl = String(data.zohoUrl || '').trim();
+  const now = new Date().toISOString();
+
+  const existing = get('SELECT id FROM zoho_accounts WHERE id = ?', [id]);
+  if (existing) {
+    run(
+      `UPDATE zoho_accounts
+       SET account_name = ?, phone = ?, website = ?, industry = ?, annual_revenue = ?,
+           billing_city = ?, billing_country = ?, owner_name = ?, zoho_url = ?, updated_at = ?
+       WHERE id = ?`,
+      [accountName, phone, website, industry, annualRevenue, billingCity, billingCountry, ownerName, zohoUrl, now, id],
+    );
+    return { id, inserted: false, updated: true };
+  } else {
+    run(
+      `INSERT INTO zoho_accounts
+       (id, account_name, phone, website, industry, annual_revenue, billing_city, billing_country, owner_name, zoho_url, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, accountName, phone, website, industry, annualRevenue, billingCity, billingCountry, ownerName, zohoUrl, now, now],
+    );
+    return { id, inserted: true, updated: false };
+  }
+}
+
+export function listZohoAccounts(filters = {}) {
+  const search = String(filters.search || '').trim().toLowerCase();
+  let query = 'SELECT * FROM zoho_accounts';
+  const params = [];
+  if (search) {
+    query += ' WHERE lower(account_name) LIKE ? OR lower(industry) LIKE ? OR lower(billing_city) LIKE ? OR lower(owner_name) LIKE ?';
+    const s = `%${search}%`;
+    params.push(s, s, s, s);
+  }
+  query += ' ORDER BY account_name ASC';
+  return all(query, params);
+}
+
+export function saveZohoAccountMeta(meta = {}) {
+  const id = 'current_meta';
+  const userName = meta.userName || meta.user_name || 'Zoho User';
+  const userEmail = meta.userEmail || meta.user_email || '';
+  const zuid = String(meta.zuid || meta.user_id || '');
+  const orgName = meta.orgName || meta.org_name || 'Climeto CRM Org';
+  const orgId = String(meta.orgId || meta.org_id || '');
+  const role = meta.role || 'Administrator';
+  const accountUrl = meta.accountUrl || meta.account_url || 'https://accounts.zoho.in';
+  const status = meta.status || 'Active';
+  const now = new Date().toISOString();
+
+  const existing = get('SELECT id FROM zoho_account_meta WHERE id = ?', [id]);
+  if (existing) {
+    run(
+      `UPDATE zoho_account_meta
+       SET user_name = ?, user_email = ?, zuid = ?, org_name = ?, org_id = ?, role = ?, account_url = ?, status = ?, last_synced_at = ?
+       WHERE id = ?`,
+      [userName, userEmail, zuid, orgName, orgId, role, accountUrl, status, now, id],
+    );
+  } else {
+    run(
+      `INSERT INTO zoho_account_meta
+       (id, user_name, user_email, zuid, org_name, org_id, role, account_url, status, last_synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, userName, userEmail, zuid, orgName, orgId, role, accountUrl, status, now],
+    );
+  }
+  persistDb();
+  return getZohoAccountMeta();
+}
+
+export function getZohoAccountMeta() {
+  const row = get('SELECT * FROM zoho_account_meta WHERE id = ?', ['current_meta']);
+  if (!row) {
+    return {
+      user_name: 'Zoho Workspace Account',
+      user_email: 'admin@climeto.com',
+      zuid: '60029188471',
+      org_name: 'Climeto Global Ltd',
+      org_id: '700192841',
+      role: 'Super Administrator',
+      account_url: 'https://accounts.zoho.in',
+      status: 'Ready for OAuth',
+      last_synced_at: null,
+    };
+  }
+  return row;
+}
+
+export function upsertZohoEmail(data) {
+  const externalId = String(data.externalId || data.external_id || data.id || '').trim();
+  const id = `ze-${externalId || randomUUID().slice(0, 8)}`;
+  const executiveName = String(data.executiveName || data.executive_name || 'Zoho Executive').trim();
+  const executiveEmail = String(data.executiveEmail || data.executive_email || '').trim().toLowerCase();
+  const clientEmail = String(data.clientEmail || data.client_email || '').trim().toLowerCase();
+  const clientName = String(data.clientName || data.client_name || '').trim();
+  const direction = String(data.direction || 'outbound').toLowerCase() === 'inbound' ? 'inbound' : 'outbound';
+  const subject = String(data.subject || 'No Subject').trim();
+  const summary = String(data.summary || data.snippet || '').trim();
+  const bodySnippet = String(data.bodySnippet || data.body_snippet || summary || '').trim();
+  const sentAt = data.sentAt || data.sent_at || data.occurred_at || new Date().toISOString();
+  const status = String(data.status || (direction === 'inbound' ? 'received' : 'sent')).trim();
+  const zohoUrl = String(data.zohoUrl || data.zoho_url || '').trim();
+  const now = new Date().toISOString();
+
+  // Find matching lead by email if lead_id not explicitly provided
+  let leadId = data.leadId || data.lead_id || null;
+  let finalClientName = clientName;
+
+  if (!leadId && clientEmail) {
+    const matchedLead = get('SELECT id, client_name FROM leads WHERE lower(trim(email)) = ? LIMIT 1', [clientEmail]);
+    if (matchedLead) {
+      leadId = matchedLead.id;
+      if (!finalClientName) finalClientName = matchedLead.client_name;
+    }
+  }
+
+  // Check if existing
+  const existing = externalId ? get('SELECT id FROM zoho_emails WHERE external_id = ?', [externalId]) : null;
+
+  if (existing) {
+    run(
+      `UPDATE zoho_emails
+       SET lead_id = COALESCE(?, lead_id), executive_name = ?, executive_email = ?,
+           client_name = ?, client_email = ?, direction = ?, subject = ?,
+           summary = ?, body_snippet = ?, sent_at = ?, status = ?, zoho_url = ?
+       WHERE id = ?`,
+      [
+        leadId,
+        executiveName,
+        executiveEmail,
+        finalClientName || 'Client',
+        clientEmail,
+        direction,
+        subject,
+        summary,
+        bodySnippet,
+        sentAt,
+        status,
+        zohoUrl,
+        existing.id,
+      ],
+    );
+    return { id: existing.id, inserted: false, updated: true };
+  } else {
+    run(
+      `INSERT INTO zoho_emails
+       (id, external_id, lead_id, executive_name, executive_email, client_name, client_email, direction, subject, summary, body_snippet, sent_at, status, zoho_url, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        externalId || id,
+        leadId,
+        executiveName,
+        executiveEmail,
+        finalClientName || 'Client',
+        clientEmail,
+        direction,
+        subject,
+        summary,
+        bodySnippet,
+        sentAt,
+        status,
+        zohoUrl,
+        now,
+      ],
+    );
+
+    // Also link into activities table if leadId exists so it appears in Lead 360 timeline!
+    if (leadId) {
+      const actId = `act-ze-${id}`;
+      const actTitle =
+        direction === 'outbound'
+          ? `Email sent by ${executiveName}`
+          : `Email received from ${finalClientName || clientEmail}`;
+      const actDetail = `${subject}: ${summary || bodySnippet}`;
+      run(
+        `INSERT OR IGNORE INTO activities (id, lead_id, platform, title, detail, created_at)
+         VALUES (?, ?, 'email', ?, ?, ?)`,
+        [actId, leadId, actTitle, actDetail, sentAt],
+      );
+    }
+
+    return { id, inserted: true, updated: false };
+  }
+}
+
+export function listZohoEmails(filters = {}) {
+  const { executive = '', direction = '', search = '', limit = 100 } = filters;
+  const conditions = ['1=1'];
+  const params = [];
+
+  if (executive) {
+    conditions.push('(lower(executive_name) LIKE ? OR lower(executive_email) LIKE ?)');
+    const execTerm = `%${executive.toLowerCase()}%`;
+    params.push(execTerm, execTerm);
+  }
+
+  if (direction) {
+    conditions.push('lower(direction) = ?');
+    params.push(direction.toLowerCase());
+  }
+
+  if (search) {
+    conditions.push(
+      '(lower(subject) LIKE ? OR lower(summary) LIKE ? OR lower(client_name) LIKE ? OR lower(client_email) LIKE ? OR lower(executive_name) LIKE ?)',
+    );
+    const searchTerm = `%${search.toLowerCase()}%`;
+    params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
+  }
+
+  const query = `
+    SELECT *
+    FROM zoho_emails
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY sent_at DESC
+    LIMIT ?
+  `;
+  params.push(Number(limit) || 100);
+
+  return all(query, params);
+}
+
+export function getZohoEmailsStats() {
+  const row = get(`
+    SELECT
+      COUNT(*) AS total_emails,
+      SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outbound_count,
+      SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inbound_count,
+      COUNT(DISTINCT executive_email) AS active_executives
+    FROM zoho_emails
+  `);
+
+  const execRows = all(`
+    SELECT executive_name, executive_email, COUNT(*) AS email_count
+    FROM zoho_emails
+    GROUP BY executive_email
+    ORDER BY email_count DESC
+  `);
+
+  return {
+    total: row?.total_emails || 0,
+    outbound: row?.outbound_count || 0,
+    inbound: row?.inbound_count || 0,
+    activeExecutives: row?.active_executives || 0,
+    executives: execRows,
+  };
+}
+
+export function seedZohoEmailsIfEmpty() {
+  try {
+    const row = get('SELECT COUNT(*) AS count FROM zoho_emails');
+    if ((row?.count ?? 0) === 0) {
+      const sampleEmails = [
+        {
+          externalId: 'ze-msg-101',
+          leadId: 'lead-1',
+          executiveName: 'Ambuj Pathak',
+          executiveEmail: 'ambuj@climeto.com',
+          clientName: 'ABC Polymers',
+          clientEmail: 'procurement@abcpolymers.in',
+          direction: 'outbound',
+          subject: 'Revised EPR Pricing Quotation - Climeto Global',
+          summary: 'Shared customized quote for 500 MT plastic EPR credits at ₹4.20/kg.',
+          bodySnippet:
+            'Dear Procurement Team, As discussed on our call today, please find attached the revised quote for the 500 MT EPR fulfillment credits...',
+          sentAt: '2026-11-16T14:30:00Z',
+          status: 'opened',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Emails',
+        },
+        {
+          externalId: 'ze-msg-102',
+          leadId: 'lead-1',
+          executiveName: 'Ambuj Pathak',
+          executiveEmail: 'ambuj@climeto.com',
+          clientName: 'ABC Polymers',
+          clientEmail: 'procurement@abcpolymers.in',
+          direction: 'inbound',
+          subject: 'Re: Revised EPR Pricing Quotation - Climeto Global',
+          summary: 'Client acknowledged quotation and requested compliance certificate samples.',
+          bodySnippet:
+            'Hi Ambuj, Thanks for sharing the quotation. The commercials look feasible. Could you also share a specimen certificate of CPCB compliance?',
+          sentAt: '2026-11-16T16:15:00Z',
+          status: 'replied',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Emails',
+        },
+        {
+          externalId: 'ze-msg-103',
+          leadId: 'lead-2',
+          executiveName: 'Sahil Patel',
+          executiveEmail: 'sahil@climeto.com',
+          clientName: 'Vardhman Plastics',
+          clientEmail: 'info@vardhmanplastics.in',
+          direction: 'outbound',
+          subject: 'Introduction to Plastic Waste Management Solutions - Climeto',
+          summary: 'Introductory deck and category-wise audit checklist sent to plant manager.',
+          bodySnippet:
+            'Hello Vardhman Team, Following our preliminary phone discussion, I am forwarding the comprehensive brochure outlining our audit methodology...',
+          sentAt: '2026-11-15T11:00:00Z',
+          status: 'delivered',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Emails',
+        },
+        {
+          externalId: 'ze-msg-104',
+          leadId: 'lead-3',
+          executiveName: 'Riya Sen',
+          executiveEmail: 'riya@climeto.com',
+          clientName: 'Shree Industries',
+          clientEmail: 'admin@shreeindustries.in',
+          direction: 'outbound',
+          subject: 'Annual Carbon Footprint & ESG Assessment Offer',
+          summary: 'Detailed savings calculation and proposal sent for review.',
+          bodySnippet:
+            'Dear Sir, Climeto is pleased to present our specialized industrial assessment framework designed to reduce regulatory compliance friction...',
+          sentAt: '2026-11-14T10:45:00Z',
+          status: 'opened',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Emails',
+        },
+        {
+          externalId: 'ze-msg-105',
+          leadId: 'lead-2',
+          executiveName: 'Sahil Patel',
+          executiveEmail: 'sahil@climeto.com',
+          clientName: 'Vardhman Plastics',
+          clientEmail: 'info@vardhmanplastics.in',
+          direction: 'inbound',
+          subject: 'Re: Introduction to Plastic Waste Management Solutions',
+          summary: 'Client confirmed receipt and requested follow-up meeting on Friday.',
+          bodySnippet:
+            'Received with thanks. Our technical head will review the audit checklist and we can schedule a quick review this Friday afternoon.',
+          sentAt: '2026-11-15T15:20:00Z',
+          status: 'replied',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Emails',
+        },
+        {
+          externalId: 'ze-msg-106',
+          leadId: 'lead-1',
+          executiveName: 'Ambuj Pathak',
+          executiveEmail: 'ambuj@climeto.com',
+          clientName: 'ABC Polymers',
+          clientEmail: 'procurement@abcpolymers.in',
+          direction: 'outbound',
+          subject: 'Specimen Compliance Certificate & Next Steps',
+          summary: 'Attached verified CPCB certificate and onboarding draft agreement.',
+          bodySnippet:
+            'Please find attached the specimen certificate issued by CPCB alongside our master onboarding agreement...',
+          sentAt: '2026-11-17T09:10:00Z',
+          status: 'sent',
+          zohoUrl: 'https://crm.zoho.in/crm/tab/Emails',
+        },
+      ];
+
+      for (const email of sampleEmails) {
+        upsertZohoEmail(email);
+      }
+    }
+  } catch (err) {
+    console.warn('[Zoho DB] Notice in seedZohoEmailsIfEmpty:', err.message);
+  }
+}
+

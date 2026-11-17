@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowUpRight,
+  Briefcase,
   LayoutDashboard,
   Mail,
   Megaphone,
@@ -9,6 +10,7 @@ import {
   Phone,
   Search,
   Settings,
+  ShieldCheck,
   Users,
 } from 'lucide-react';
 import {
@@ -31,6 +33,8 @@ const navItems = [
   { to: '/platforms/whatsapp', label: 'WhatsApp', icon: MessageCircleMore },
   { to: '/platforms/email', label: 'Email', icon: Mail },
   { to: '/platforms/campaign', label: 'Campaigns', icon: Megaphone },
+  { to: '/zoho-crm', label: 'Zoho CRM', icon: Briefcase },
+  { to: '/zoho-accounts', label: 'Zoho Accounts', icon: ShieldCheck },
   { to: '/lead-360', label: 'Lead 360', icon: Users },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
@@ -183,6 +187,8 @@ function pageTitle(pathname) {
   if (pathname.startsWith('/calls/')) return 'Call Detail';
   if (pathname.startsWith('/calls')) return 'Calls';
   if (pathname.startsWith('/platforms/')) return 'Platform Feed';
+  if (pathname.startsWith('/zoho-crm')) return 'Zoho CRM';
+  if (pathname.startsWith('/zoho-accounts')) return 'Zoho Accounts';
   if (pathname.startsWith('/lead-360')) return 'Lead 360';
   if (pathname.startsWith('/leads/')) return 'Lead Detail';
   if (pathname.startsWith('/settings')) return 'Settings';
@@ -248,22 +254,22 @@ function DashboardPage({ refreshKey }) {
   const feed = useMemo(() => activities.data || [], [activities.data]);
   const stats = dashboard.data?.stats;
   const recent = dashboard.data?.recent || [];
+  const recentLeads = dashboard.data?.recentLeads || [];
 
   return (
     <section className="page-stack">
       <div className="hero-panel">
         <div>
-          <div className="eyebrow">7-day foundation</div>
-          <h3>Calls-first working cockpit</h3>
+          <div className="eyebrow">Cockpit & CRM Overview</div>
+          <h3>Calls, Campaigns & Zoho CRM Workspace</h3>
           <p>
-            Consolidates calls, promises, next actions, and platform follow-ups in one place.
-            Zoho is currently maintained as a destination boundary, not a hard dependency.
+            Centralized hub for calls, customer promises, live email campaigns, and Zoho CRM records.
           </p>
         </div>
         <div className="hero-badges">
           <span className="pill neutral">Local DB</span>
-          <span className="pill neutral">Seeded November calls</span>
-          <span className="pill neutral">Zoho navigation ready</span>
+          <span className="pill neutral">Manyreach Live</span>
+          <span className="pill good">Zoho CRM Ready</span>
         </div>
       </div>
 
@@ -271,7 +277,7 @@ function DashboardPage({ refreshKey }) {
 
       <div className="stats-grid">
         <StatCard label="Total Calls" value={stats?.total_calls} />
-        <StatCard label="November Calls" value={stats?.november_calls} />
+        <StatCard label="Total Leads" value={stats?.total_leads} />
         <StatCard label="Hot Leads" value={stats?.hot_leads} />
         <StatCard label="Promises Captured" value={stats?.promises} />
       </div>
@@ -338,6 +344,45 @@ function DashboardPage({ refreshKey }) {
           </div>
         </section>
       </div>
+
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <h3>Zoho CRM & Active Leads</h3>
+            <p>Unified leads synced from Zoho CRM and live client engagements.</p>
+          </div>
+          <Link className="text-link" to="/lead-360">
+            View all in Lead 360
+          </Link>
+        </div>
+
+        {dashboard.loading ? <LoadingBlock label="Loading leads..." /> : null}
+        {!dashboard.loading && recentLeads.length === 0 ? <EmptyBlock label="No leads found." /> : null}
+
+        <div className="stack-list">
+          {recentLeads.map((lead) => (
+            <Link key={lead.id} className="list-row" to={`/leads/${lead.id}`}>
+              <div>
+                <strong>{lead.client_name}</strong>
+                <p>{lead.company || lead.client_phone || 'No company'}</p>
+              </div>
+              <div>
+                <span className={`pill ${lead.hotness === 'hot' ? 'good' : 'neutral'}`}>
+                  {lead.stage || 'Contacted'}
+                </span>
+                <p style={{ marginTop: '0.25rem' }}>{lead.latest_summary}</p>
+              </div>
+              <div className="meta-align">
+                {lead.zoho_url ? (
+                  <span className="pill good">Zoho Linked</span>
+                ) : (
+                  <span className="pill neutral">Lead 360</span>
+                )}
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
     </section>
   );
 }
@@ -637,6 +682,401 @@ function Lead360Page({ refreshKey }) {
   );
 }
 
+function ZohoCrmPage({ refreshKey }) {
+  const [search, setSearch] = useState('');
+  const [stageFilter, setStageFilter] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+
+  const leadsState = useAsync(() => api('/api/leads'), [refreshKey, syncing]);
+  const settingsState = useAsync(() => api('/api/settings/zoho'), []);
+
+  const leads = leadsState.data || [];
+  const settings = settingsState.data || {};
+  const crmUrl = settings.baseUrl || 'https://crm.zoho.in/crm/tab/Leads';
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/settings/zoho/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(`Sync success! Processed: ${json.data.processed}, Inserted: ${json.data.inserted}, Updated: ${json.data.updated}`);
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync not ready. Check .env credentials.');
+      }
+    } catch (err) {
+      setSyncMsg(`Sync error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const stages = Array.from(new Set(leads.map((l) => l.stage).filter(Boolean)));
+
+  const filtered = leads.filter((l) => {
+    const text = `${l.client_name} ${l.company} ${l.client_phone} ${l.email}`.toLowerCase();
+    const matchesSearch = !search || text.includes(search.toLowerCase());
+    const matchesStage = !stageFilter || l.stage === stageFilter;
+    return matchesSearch && matchesStage;
+  });
+
+  return (
+    <section className="page-stack">
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Zoho CRM Integration</div>
+            <h3>Zoho CRM Workspace</h3>
+            <p>Unified Zoho CRM records with live search, stage management, and direct CRM links.</p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${settings.connected ? 'good' : 'neutral'}`}>
+              {settings.connected ? 'Zoho Connected' : 'Zoho Pending'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Zoho Now'}
+            </button>
+            <a
+              className="primary-button"
+              href={crmUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
+            >
+              Open Zoho CRM Portal
+              <ArrowUpRight size={15} />
+            </a>
+          </div>
+        </div>
+
+        {syncMsg ? (
+          <div className="status-card" style={{ marginBottom: '1rem' }}>
+            {syncMsg}
+          </div>
+        ) : null}
+
+        <div className="detail-grid" style={{ marginBottom: '1.25rem' }}>
+          <InfoCard title="Total Leads in System" value={leads.length} />
+          <InfoCard title="CRM Mode" value={settings.mode || 'template'} />
+          <InfoCard title="CRM Base URL" value={settings.baseUrl || 'https://crm.zoho.in/crm/tab/Leads'} />
+          <InfoCard
+            title="Auto-Sync Status"
+            value={
+              settings.hasCredentials
+                ? 'Active (Every 5 mins)'
+                : 'Navigation Linked (Add keys to .env for automatic sync)'
+            }
+          />
+        </div>
+
+        <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by client name, company, phone, or email..."
+            />
+          </div>
+          <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
+            <option value="">All Stages</option>
+            {stages.map((st) => (
+              <option key={st} value={st}>
+                {st}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {leadsState.loading ? <LoadingBlock label="Loading Zoho CRM leads..." /> : null}
+        {leadsState.error ? <ErrorCard message={leadsState.error} /> : null}
+        {!leadsState.loading && filtered.length === 0 ? (
+          <EmptyBlock label="No leads matching criteria." />
+        ) : null}
+
+        <div className="stack-list">
+          {filtered.map((lead) => {
+            const zohoUrl = buildZohoUrl(lead, settings);
+            return (
+              <div key={lead.id} className="list-row">
+                <div>
+                  <strong>{lead.client_name}</strong>
+                  <p>{lead.company || 'No Company'}</p>
+                  <p className="muted-line">{lead.client_phone || lead.email || '-'}</p>
+                </div>
+                <div>
+                  <div className="row-actions" style={{ marginBottom: '0.35rem' }}>
+                    <span className={`pill ${lead.hotness === 'hot' ? 'good' : 'neutral'}`}>
+                      {lead.stage || 'Contacted'}
+                    </span>
+                    {lead.hotness ? <span className="pill neutral">{lead.hotness} priority</span> : null}
+                  </div>
+                  <strong>{lead.latest_summary}</strong>
+                  <p>{lead.next_action || 'Follow up with lead'}</p>
+                </div>
+                <div className="meta-align">
+                  <div className="row-actions">
+                    <Link
+                      className="ghost-button"
+                      to={`/leads/${lead.id}`}
+                      style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                    >
+                      Lead 360
+                    </Link>
+                    {zohoUrl ? (
+                      <a
+                        className="primary-button"
+                        href={zohoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                      >
+                        Open in Zoho
+                        <ArrowUpRight size={13} />
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function ZohoAccountsPage({ refreshKey }) {
+  const [search, setSearch] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+
+  const accountsState = useAsync(() => api('/api/zoho/accounts'), [refreshKey, syncing]);
+  const data = accountsState.data || {};
+  const meta = data.meta || {};
+  const accounts = data.accounts || [];
+  const authStatus = data.authStatus || {};
+
+  const filteredAccounts = useMemo(() => {
+    if (!search) return accounts;
+    const q = search.toLowerCase();
+    return accounts.filter(
+      (a) =>
+        (a.account_name || '').toLowerCase().includes(q) ||
+        (a.industry || '').toLowerCase().includes(q) ||
+        (a.billing_city || '').toLowerCase().includes(q) ||
+        (a.owner_name || '').toLowerCase().includes(q),
+    );
+  }, [accounts, search]);
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/zoho/accounts/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(
+          `Sync completed! Accounts & CRM refreshed (${json.data.processed || 0} records processed).`,
+        );
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync not ready. Check .env credentials.');
+      }
+    } catch (err) {
+      setSyncMsg(`Sync error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <section className="page-stack">
+      {/* CARD 1: Zoho Accounts Identity & Organization Portal */}
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Identity & Security Portal</div>
+            <h3>Zoho Accounts (accounts.zoho.in)</h3>
+            <p>
+              Single Sign-On (SSO), OAuth 2.0 authorization, active user sessions, and organization identity.
+            </p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${authStatus.connected ? 'good' : 'neutral'}`}>
+              {authStatus.connected ? 'OAuth 2.0: Connected' : 'Ready / Active'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Accounts'}
+            </button>
+            <a
+              className="primary-button"
+              href="https://accounts.zoho.in"
+              target="_blank"
+              rel="noreferrer"
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              Manage Zoho Account
+              <ArrowUpRight size={14} />
+            </a>
+          </div>
+        </div>
+
+        {syncMsg ? (
+          <div
+            style={{
+              padding: '0.6rem 0.9rem',
+              marginBottom: '1rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              backgroundColor: syncMsg.includes('error') ? '#ffefef' : '#eaf7ee',
+              color: syncMsg.includes('error') ? '#c53030' : '#22543d',
+              border: `1px solid ${syncMsg.includes('error') ? '#fed7d7' : '#c6f6d5'}`,
+            }}
+          >
+            {syncMsg}
+          </div>
+        ) : null}
+
+        <div className="stats-grid" style={{ marginBottom: '1.25rem' }}>
+          <div className="stat-card">
+            <span>Account User</span>
+            <strong>{meta.user_name || 'Zoho User'}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              {meta.user_email || 'admin@climeto.com'}
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Organization</span>
+            <strong>{meta.org_name || 'Climeto Global Ltd'}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Org ID: {meta.org_id || '700192841'}
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Account Role</span>
+            <strong>{meta.role || 'Super Administrator'}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              ZUID: {meta.zuid || '60029188471'}
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Auth Server & Status</span>
+            <strong>accounts.zoho.in</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              {meta.status || 'Active Session'}
+            </p>
+          </div>
+        </div>
+
+        <div
+          style={{
+            padding: '0.85rem 1.1rem',
+            borderRadius: '10px',
+            backgroundColor: 'rgba(238, 242, 248, 0.6)',
+            border: '1px solid #e2e8f0',
+            fontSize: '0.84rem',
+            lineHeight: '1.45',
+            color: '#475569',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+          }}
+        >
+          <ShieldCheck size={20} style={{ color: '#0284c7', flexShrink: 0 }} />
+          <div>
+            <strong>Zoho Accounts Security Note:</strong> Passwords, Two-Factor Authentication (2FA), and Multi-User Session controls are managed centrally inside the Zoho Accounts IAM service. This intelligence workspace connects securely via OAuth 2.0 tokens without ever storing your Zoho password.
+          </div>
+        </div>
+      </section>
+
+      {/* CARD 2: Zoho Accounts / Companies List */}
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Client Directory</div>
+            <h3>Company Accounts ({filteredAccounts.length})</h3>
+            <p>Corporate accounts and client organizations synced directly from Zoho.</p>
+          </div>
+        </div>
+
+        <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search accounts by company name, industry, city, or owner..."
+            />
+          </div>
+        </div>
+
+        {accountsState.loading ? <LoadingBlock label="Loading Zoho accounts..." /> : null}
+        {accountsState.error ? <ErrorCard message={accountsState.error} /> : null}
+        {!accountsState.loading && filteredAccounts.length === 0 ? (
+          <EmptyBlock label="No corporate accounts found matching criteria." />
+        ) : null}
+
+        <div className="stack-list">
+          {filteredAccounts.map((account) => (
+            <div key={account.id} className="list-row">
+              <div>
+                <strong>{account.account_name}</strong>
+                <p style={{ marginTop: '0.2rem' }}>{account.phone || '-'}</p>
+                {account.website ? (
+                  <p className="muted-line" style={{ fontSize: '0.78rem' }}>
+                    {account.website}
+                  </p>
+                ) : null}
+              </div>
+              <div>
+                <div className="row-actions" style={{ marginBottom: '0.35rem' }}>
+                  <span className="pill neutral">{account.industry || 'Enterprise'}</span>
+                  {account.annual_revenue ? (
+                    <span className="pill good">{account.annual_revenue}</span>
+                  ) : null}
+                </div>
+                <p style={{ fontSize: '0.85rem' }}>
+                  <strong>Location:</strong> {account.billing_city || 'India'}
+                  {account.billing_country ? `, ${account.billing_country}` : ''}
+                </p>
+                <p className="muted-line" style={{ fontSize: '0.78rem' }}>
+                  Owner: {account.owner_name || 'Zoho User'}
+                </p>
+              </div>
+              <div className="meta-align">
+                <a
+                  className="primary-button"
+                  href={account.zoho_url || 'https://crm.zoho.in/crm/tab/Accounts'}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                >
+                  Open in Zoho
+                  <ArrowUpRight size={13} />
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function LeadDetailPage({ refreshKey }) {
   const { leadId } = useParams();
   const leadState = useAsync(() => api(`/api/leads/${leadId}`), [leadId, refreshKey]);
@@ -879,6 +1319,262 @@ function CampaignsFeedPage() {
   );
 }
 
+function ZohoEmailsPage() {
+  const [emails, setEmails] = useState([]);
+  const [stats, setStats] = useState({ total: 0, outbound: 0, inbound: 0, activeExecutives: 0, executives: [] });
+  const [authStatus, setAuthStatus] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [selectedExec, setSelectedExec] = useState('');
+  const [selectedDirection, setSelectedDirection] = useState('');
+
+  const loadEmails = useCallback(
+    async ({ silent } = {}) => {
+      try {
+        if (!silent) setLoading(true);
+        const params = new URLSearchParams();
+        if (search) params.set('search', search);
+        if (selectedExec) params.set('executive', selectedExec);
+        if (selectedDirection) params.set('direction', selectedDirection);
+
+        const res = await fetch(`${API_BASE}/api/zoho/emails?${params.toString()}`);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const json = await res.json();
+        const payload = json.data || {};
+        setEmails(payload.emails || []);
+        if (payload.stats) setStats(payload.stats);
+        if (payload.authStatus) setAuthStatus(payload.authStatus);
+        setError('');
+      } catch (err) {
+        setError(err.message || 'Failed to load Zoho emails');
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [search, selectedExec, selectedDirection],
+  );
+
+  useEffect(() => {
+    loadEmails({ silent: false });
+  }, [loadEmails]);
+
+  // Periodic polling every 15s to automatically catch upcoming/incoming emails
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadEmails({ silent: true });
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [loadEmails]);
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/zoho/emails/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(
+          `Sync complete! Processed: ${json.data.processed || 0}, Inserted: ${json.data.inserted || 0}`,
+        );
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync ready. Check Zoho API credentials in .env.');
+      }
+      await loadEmails({ silent: false });
+    } catch (err) {
+      setSyncMsg(`Sync error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <section className="page-stack">
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Platform Feed</div>
+            <h3>Zoho Executive Emails</h3>
+            <p>
+              Inbound and outbound email communications across all executives (Ambuj, Sahil, Riya, etc.) synced from Zoho CRM & Mail.
+            </p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${authStatus.connected ? 'good' : 'neutral'}`}>
+              {authStatus.connected ? 'Live: Zoho Connected' : 'Active Email Feed'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Zoho Emails'}
+            </button>
+            <a
+              className="primary-button"
+              href="https://crm.zoho.in/crm/tab/Emails"
+              target="_blank"
+              rel="noreferrer"
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              Open Zoho Mail
+              <ArrowUpRight size={14} />
+            </a>
+          </div>
+        </div>
+
+        {syncMsg ? (
+          <div
+            style={{
+              padding: '0.6rem 0.9rem',
+              marginBottom: '1rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              backgroundColor: syncMsg.includes('error') ? '#ffefef' : '#eaf7ee',
+              color: syncMsg.includes('error') ? '#c53030' : '#22543d',
+              border: `1px solid ${syncMsg.includes('error') ? '#fed7d7' : '#c6f6d5'}`,
+            }}
+          >
+            {syncMsg}
+          </div>
+        ) : null}
+
+        {/* 4 STAT CARDS */}
+        <div className="stats-grid" style={{ marginBottom: '1.25rem' }}>
+          <div className="stat-card">
+            <span>Total Emails Exchanged</span>
+            <strong>{stats.total || emails.length}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              All executive communications
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Sent by Executives</span>
+            <strong>{stats.outbound || 0}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Outbound client outreach
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Received from Clients</span>
+            <strong>{stats.inbound || 0}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Inbound replies & queries
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Active Executives</span>
+            <strong>{stats.activeExecutives || stats.executives?.length || 1}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Ambuj, Sahil, Riya & team
+            </p>
+          </div>
+        </div>
+
+        {/* FILTER BAR */}
+        <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by subject, client name, email, or content snippet..."
+            />
+          </div>
+
+          <select value={selectedExec} onChange={(e) => setSelectedExec(e.target.value)}>
+            <option value="">All Executives</option>
+            {(stats.executives || []).map((ex) => (
+              <option key={ex.executive_email} value={ex.executive_email}>
+                {ex.executive_name} ({ex.email_count})
+              </option>
+            ))}
+          </select>
+
+          <select value={selectedDirection} onChange={(e) => setSelectedDirection(e.target.value)}>
+            <option value="">All Directions</option>
+            <option value="outbound">Outbound (Sent by Executive)</option>
+            <option value="inbound">Inbound (Received from Client)</option>
+          </select>
+        </div>
+
+        {loading && emails.length === 0 ? <LoadingBlock label="Loading Zoho executive emails..." /> : null}
+        {error ? <ErrorCard message={error} /> : null}
+
+        <div className="stack-list">
+          {emails.map((item) => {
+            const isOutbound = item.direction === 'outbound';
+            return (
+              <div key={item.id} className="list-row">
+                <div>
+                  <strong>{item.client_name || 'Client'}</strong>
+                  <p>{item.client_email}</p>
+                  <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.25rem' }}>
+                    {isOutbound ? `To: ${item.client_email}` : `From: ${item.client_email}`}
+                  </p>
+                </div>
+                <div>
+                  <div className="row-actions" style={{ marginBottom: '0.45rem' }}>
+                    <span className={`pill ${isOutbound ? 'good' : 'neutral'}`}>
+                      {isOutbound ? `Sent by ${item.executive_name}` : `Received by ${item.executive_name}`}
+                    </span>
+                    <span className="pill neutral" style={{ fontSize: '0.74rem' }}>
+                      {item.executive_email}
+                    </span>
+                    {item.status ? (
+                      <span className="pill good" style={{ textTransform: 'capitalize' }}>
+                        {item.status}
+                      </span>
+                    ) : null}
+                  </div>
+                  <strong>{item.subject}</strong>
+                  <p style={{ marginTop: '0.25rem', color: '#334155' }}>
+                    {item.summary || item.body_snippet}
+                  </p>
+                </div>
+                <div className="meta-align">
+                  <div style={{ marginBottom: '0.4rem', fontSize: '0.82rem', color: '#64748b' }}>
+                    {formatDateTime(item.sent_at)}
+                  </div>
+                  <div className="row-actions">
+                    {item.lead_id ? (
+                      <Link
+                        className="ghost-button"
+                        to={`/leads/${item.lead_id}`}
+                        style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                      >
+                        Lead 360
+                      </Link>
+                    ) : null}
+                    <a
+                      className="primary-button"
+                      href={item.zoho_url || 'https://crm.zoho.in/crm/tab/Emails'}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                    >
+                      Open in Zoho
+                      <ArrowUpRight size={13} />
+                    </a>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {!loading && !error && emails.length === 0 ? (
+          <EmptyBlock label="No emails matching the selected criteria." />
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
 function PlatformPage() {
   const { platform } = useParams();
   const current = platformCopy[platform] || {
@@ -888,6 +1584,10 @@ function PlatformPage() {
 
   if (platform === 'campaign') {
     return <CampaignsFeedPage />;
+  }
+
+  if (platform === 'email') {
+    return <ZohoEmailsPage />;
   }
 
   const state = useAsync(() => api(`/api/activities?platform=${platform}`), [platform]);
@@ -932,18 +1632,51 @@ function PlatformPage() {
 }
 
 function SettingsPage() {
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
   const settingsState = useAsync(() => api('/api/settings/zoho'), []);
+
+  async function handleZohoSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/settings/zoho/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(`Sync complete! Processed: ${json.data.processed}, Inserted: ${json.data.inserted}, Updated: ${json.data.updated}`);
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync skipped or failed');
+      }
+    } catch (err) {
+      setSyncMsg(`Error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   return (
     <section className="page-stack">
       <section className="card">
         <div className="section-head">
           <div>
-            <div className="eyebrow">Zoho boundary</div>
-            <h3>Navigation first, sync later</h3>
-            <p>In Phase 1, UI workflows are not blocked by Zoho authentication maintenance.</p>
+            <div className="eyebrow">Zoho CRM Integration</div>
+            <h3>CRM Connection & Auto-Sync</h3>
+            <p>Direct navigation links and automatic lead data synchronization.</p>
+          </div>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={syncing}
+              onClick={handleZohoSync}
+              style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Zoho Leads Now'}
+            </button>
           </div>
         </div>
+
+        {syncMsg ? <div className="status-card" style={{ marginBottom: '1rem' }}>{syncMsg}</div> : null}
 
         {settingsState.loading ? <LoadingBlock label="Loading settings..." /> : null}
         {settingsState.error ? <ErrorCard message={settingsState.error} /> : null}
@@ -970,13 +1703,13 @@ function SettingsPage() {
           <div className="list-row">
             <div>
               <strong>Now</strong>
-              <p>Calls UI, local data model, platform tabs, Lead 360, Zoho open-link hook.</p>
+              <p>Calls UI, local SQLite model, platform tabs, Lead 360, Manyreach sync, Zoho link & API auto-sync connector.</p>
             </div>
           </div>
           <div className="list-row">
             <div>
               <strong>Next</strong>
-              <p>Note sync, task sync, and stage sync via backend bridge once Zoho auth is repaired.</p>
+              <p>Two-way notes and stage write-back to Zoho CRM upon call completion.</p>
             </div>
           </div>
         </div>
@@ -990,6 +1723,20 @@ function StatCard({ label, value }) {
     <article className="stat-card">
       <span>{label}</span>
       <strong>{value ?? '-'}</strong>
+    </article>
+  );
+}
+
+function SummaryCard({ label, value, subtext }) {
+  return (
+    <article className="stat-card">
+      <span>{label}</span>
+      <strong>{value ?? '-'}</strong>
+      {subtext ? (
+        <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+          {subtext}
+        </p>
+      ) : null}
     </article>
   );
 }
@@ -1117,6 +1864,8 @@ function WorkspaceRoutes() {
         <Route path="/calls" element={<CallsPage refreshKey={refreshKey} />} />
         <Route path="/calls/:callId" element={<CallDetailPage refreshKey={refreshKey} />} />
         <Route path="/platforms/:platform" element={<PlatformPage />} />
+        <Route path="/zoho-crm" element={<ZohoCrmPage refreshKey={refreshKey} />} />
+        <Route path="/zoho-accounts" element={<ZohoAccountsPage refreshKey={refreshKey} />} />
         <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />
         <Route path="/leads/:leadId" element={<LeadDetailPage refreshKey={refreshKey} />} />
         <Route path="/settings" element={<SettingsPage />} />
