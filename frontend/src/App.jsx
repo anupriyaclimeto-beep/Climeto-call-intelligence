@@ -1319,6 +1319,262 @@ function CampaignsFeedPage() {
   );
 }
 
+function ZohoEmailsPage() {
+  const [emails, setEmails] = useState([]);
+  const [stats, setStats] = useState({ total: 0, outbound: 0, inbound: 0, activeExecutives: 0, executives: [] });
+  const [authStatus, setAuthStatus] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [selectedExec, setSelectedExec] = useState('');
+  const [selectedDirection, setSelectedDirection] = useState('');
+
+  const loadEmails = useCallback(
+    async ({ silent } = {}) => {
+      try {
+        if (!silent) setLoading(true);
+        const params = new URLSearchParams();
+        if (search) params.set('search', search);
+        if (selectedExec) params.set('executive', selectedExec);
+        if (selectedDirection) params.set('direction', selectedDirection);
+
+        const res = await fetch(`${API_BASE}/api/zoho/emails?${params.toString()}`);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const json = await res.json();
+        const payload = json.data || {};
+        setEmails(payload.emails || []);
+        if (payload.stats) setStats(payload.stats);
+        if (payload.authStatus) setAuthStatus(payload.authStatus);
+        setError('');
+      } catch (err) {
+        setError(err.message || 'Failed to load Zoho emails');
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [search, selectedExec, selectedDirection],
+  );
+
+  useEffect(() => {
+    loadEmails({ silent: false });
+  }, [loadEmails]);
+
+  // Periodic polling every 15s to automatically catch upcoming/incoming emails
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadEmails({ silent: true });
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [loadEmails]);
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/zoho/emails/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(
+          `Sync complete! Processed: ${json.data.processed || 0}, Inserted: ${json.data.inserted || 0}`,
+        );
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync ready. Check Zoho API credentials in .env.');
+      }
+      await loadEmails({ silent: false });
+    } catch (err) {
+      setSyncMsg(`Sync error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <section className="page-stack">
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Platform Feed</div>
+            <h3>Zoho Executive Emails</h3>
+            <p>
+              Inbound and outbound email communications across all executives (Ambuj, Sahil, Riya, etc.) synced from Zoho CRM & Mail.
+            </p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${authStatus.connected ? 'good' : 'neutral'}`}>
+              {authStatus.connected ? 'Live: Zoho Connected' : 'Active Email Feed'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Zoho Emails'}
+            </button>
+            <a
+              className="primary-button"
+              href="https://crm.zoho.in/crm/tab/Emails"
+              target="_blank"
+              rel="noreferrer"
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              Open Zoho Mail
+              <ArrowUpRight size={14} />
+            </a>
+          </div>
+        </div>
+
+        {syncMsg ? (
+          <div
+            style={{
+              padding: '0.6rem 0.9rem',
+              marginBottom: '1rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              backgroundColor: syncMsg.includes('error') ? '#ffefef' : '#eaf7ee',
+              color: syncMsg.includes('error') ? '#c53030' : '#22543d',
+              border: `1px solid ${syncMsg.includes('error') ? '#fed7d7' : '#c6f6d5'}`,
+            }}
+          >
+            {syncMsg}
+          </div>
+        ) : null}
+
+        {/* 4 STAT CARDS */}
+        <div className="stats-grid" style={{ marginBottom: '1.25rem' }}>
+          <div className="stat-card">
+            <span>Total Emails Exchanged</span>
+            <strong>{stats.total || emails.length}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              All executive communications
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Sent by Executives</span>
+            <strong>{stats.outbound || 0}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Outbound client outreach
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Received from Clients</span>
+            <strong>{stats.inbound || 0}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Inbound replies & queries
+            </p>
+          </div>
+          <div className="stat-card">
+            <span>Active Executives</span>
+            <strong>{stats.activeExecutives || stats.executives?.length || 1}</strong>
+            <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.2rem' }}>
+              Ambuj, Sahil, Riya & team
+            </p>
+          </div>
+        </div>
+
+        {/* FILTER BAR */}
+        <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by subject, client name, email, or content snippet..."
+            />
+          </div>
+
+          <select value={selectedExec} onChange={(e) => setSelectedExec(e.target.value)}>
+            <option value="">All Executives</option>
+            {(stats.executives || []).map((ex) => (
+              <option key={ex.executive_email} value={ex.executive_email}>
+                {ex.executive_name} ({ex.email_count})
+              </option>
+            ))}
+          </select>
+
+          <select value={selectedDirection} onChange={(e) => setSelectedDirection(e.target.value)}>
+            <option value="">All Directions</option>
+            <option value="outbound">Outbound (Sent by Executive)</option>
+            <option value="inbound">Inbound (Received from Client)</option>
+          </select>
+        </div>
+
+        {loading && emails.length === 0 ? <LoadingBlock label="Loading Zoho executive emails..." /> : null}
+        {error ? <ErrorCard message={error} /> : null}
+
+        <div className="stack-list">
+          {emails.map((item) => {
+            const isOutbound = item.direction === 'outbound';
+            return (
+              <div key={item.id} className="list-row">
+                <div>
+                  <strong>{item.client_name || 'Client'}</strong>
+                  <p>{item.client_email}</p>
+                  <p className="muted-line" style={{ fontSize: '0.78rem', marginTop: '0.25rem' }}>
+                    {isOutbound ? `To: ${item.client_email}` : `From: ${item.client_email}`}
+                  </p>
+                </div>
+                <div>
+                  <div className="row-actions" style={{ marginBottom: '0.45rem' }}>
+                    <span className={`pill ${isOutbound ? 'good' : 'neutral'}`}>
+                      {isOutbound ? `Sent by ${item.executive_name}` : `Received by ${item.executive_name}`}
+                    </span>
+                    <span className="pill neutral" style={{ fontSize: '0.74rem' }}>
+                      {item.executive_email}
+                    </span>
+                    {item.status ? (
+                      <span className="pill good" style={{ textTransform: 'capitalize' }}>
+                        {item.status}
+                      </span>
+                    ) : null}
+                  </div>
+                  <strong>{item.subject}</strong>
+                  <p style={{ marginTop: '0.25rem', color: '#334155' }}>
+                    {item.summary || item.body_snippet}
+                  </p>
+                </div>
+                <div className="meta-align">
+                  <div style={{ marginBottom: '0.4rem', fontSize: '0.82rem', color: '#64748b' }}>
+                    {formatDateTime(item.sent_at)}
+                  </div>
+                  <div className="row-actions">
+                    {item.lead_id ? (
+                      <Link
+                        className="ghost-button"
+                        to={`/leads/${item.lead_id}`}
+                        style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                      >
+                        Lead 360
+                      </Link>
+                    ) : null}
+                    <a
+                      className="primary-button"
+                      href={item.zoho_url || 'https://crm.zoho.in/crm/tab/Emails'}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                    >
+                      Open in Zoho
+                      <ArrowUpRight size={13} />
+                    </a>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {!loading && !error && emails.length === 0 ? (
+          <EmptyBlock label="No emails matching the selected criteria." />
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
 function PlatformPage() {
   const { platform } = useParams();
   const current = platformCopy[platform] || {
@@ -1328,6 +1584,10 @@ function PlatformPage() {
 
   if (platform === 'campaign') {
     return <CampaignsFeedPage />;
+  }
+
+  if (platform === 'email') {
+    return <ZohoEmailsPage />;
   }
 
   const state = useAsync(() => api(`/api/activities?platform=${platform}`), [platform]);
