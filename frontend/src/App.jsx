@@ -249,22 +249,22 @@ function DashboardPage({ refreshKey }) {
   const feed = useMemo(() => activities.data || [], [activities.data]);
   const stats = dashboard.data?.stats;
   const recent = dashboard.data?.recent || [];
+  const recentLeads = dashboard.data?.recentLeads || [];
 
   return (
     <section className="page-stack">
       <div className="hero-panel">
         <div>
-          <div className="eyebrow">7-day foundation</div>
-          <h3>Calls-first working cockpit</h3>
+          <div className="eyebrow">Cockpit & CRM Overview</div>
+          <h3>Calls, Campaigns & Zoho CRM Workspace</h3>
           <p>
-            Consolidates calls, promises, next actions, and platform follow-ups in one place.
-            Zoho is currently maintained as a destination boundary, not a hard dependency.
+            Centralized hub for calls, customer promises, live email campaigns, and Zoho CRM records.
           </p>
         </div>
         <div className="hero-badges">
           <span className="pill neutral">Local DB</span>
-          <span className="pill neutral">Seeded November calls</span>
-          <span className="pill neutral">Zoho navigation ready</span>
+          <span className="pill neutral">Manyreach Live</span>
+          <span className="pill good">Zoho CRM Ready</span>
         </div>
       </div>
 
@@ -272,7 +272,7 @@ function DashboardPage({ refreshKey }) {
 
       <div className="stats-grid">
         <StatCard label="Total Calls" value={stats?.total_calls} />
-        <StatCard label="November Calls" value={stats?.november_calls} />
+        <StatCard label="Total Leads" value={stats?.total_leads} />
         <StatCard label="Hot Leads" value={stats?.hot_leads} />
         <StatCard label="Promises Captured" value={stats?.promises} />
       </div>
@@ -339,6 +339,45 @@ function DashboardPage({ refreshKey }) {
           </div>
         </section>
       </div>
+
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <h3>Zoho CRM & Active Leads</h3>
+            <p>Unified leads synced from Zoho CRM and live client engagements.</p>
+          </div>
+          <Link className="text-link" to="/lead-360">
+            View all in Lead 360
+          </Link>
+        </div>
+
+        {dashboard.loading ? <LoadingBlock label="Loading leads..." /> : null}
+        {!dashboard.loading && recentLeads.length === 0 ? <EmptyBlock label="No leads found." /> : null}
+
+        <div className="stack-list">
+          {recentLeads.map((lead) => (
+            <Link key={lead.id} className="list-row" to={`/leads/${lead.id}`}>
+              <div>
+                <strong>{lead.client_name}</strong>
+                <p>{lead.company || lead.client_phone || 'No company'}</p>
+              </div>
+              <div>
+                <span className={`pill ${lead.hotness === 'hot' ? 'good' : 'neutral'}`}>
+                  {lead.stage || 'Contacted'}
+                </span>
+                <p style={{ marginTop: '0.25rem' }}>{lead.latest_summary}</p>
+              </div>
+              <div className="meta-align">
+                {lead.zoho_url ? (
+                  <span className="pill good">Zoho Linked</span>
+                ) : (
+                  <span className="pill neutral">Lead 360</span>
+                )}
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
     </section>
   );
 }

@@ -315,7 +315,14 @@ export function getDashboardData() {
      LIMIT 5`,
   );
 
-  return { stats, recent };
+  const recentLeads = all(
+    `SELECT id, client_name, client_phone, company, stage, hotness, latest_summary, next_action, zoho_url
+     FROM leads
+     ORDER BY rowid DESC
+     LIMIT 6`,
+  );
+
+  return { stats, recent, recentLeads };
 }
 
 export function listCalls(filters = {}) {
