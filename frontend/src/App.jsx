@@ -933,18 +933,51 @@ function PlatformPage() {
 }
 
 function SettingsPage() {
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
   const settingsState = useAsync(() => api('/api/settings/zoho'), []);
+
+  async function handleZohoSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/settings/zoho/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(`Sync complete! Processed: ${json.data.processed}, Inserted: ${json.data.inserted}, Updated: ${json.data.updated}`);
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync skipped or failed');
+      }
+    } catch (err) {
+      setSyncMsg(`Error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   return (
     <section className="page-stack">
       <section className="card">
         <div className="section-head">
           <div>
-            <div className="eyebrow">Zoho boundary</div>
-            <h3>Navigation first, sync later</h3>
-            <p>In Phase 1, UI workflows are not blocked by Zoho authentication maintenance.</p>
+            <div className="eyebrow">Zoho CRM Integration</div>
+            <h3>CRM Connection & Auto-Sync</h3>
+            <p>Direct navigation links and automatic lead data synchronization.</p>
+          </div>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={syncing}
+              onClick={handleZohoSync}
+              style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Zoho Leads Now'}
+            </button>
           </div>
         </div>
+
+        {syncMsg ? <div className="status-card" style={{ marginBottom: '1rem' }}>{syncMsg}</div> : null}
 
         {settingsState.loading ? <LoadingBlock label="Loading settings..." /> : null}
         {settingsState.error ? <ErrorCard message={settingsState.error} /> : null}
@@ -971,13 +1004,13 @@ function SettingsPage() {
           <div className="list-row">
             <div>
               <strong>Now</strong>
-              <p>Calls UI, local data model, platform tabs, Lead 360, Zoho open-link hook.</p>
+              <p>Calls UI, local SQLite model, platform tabs, Lead 360, Manyreach sync, Zoho link & API auto-sync connector.</p>
             </div>
           </div>
           <div className="list-row">
             <div>
               <strong>Next</strong>
-              <p>Note sync, task sync, and stage sync via backend bridge once Zoho auth is repaired.</p>
+              <p>Two-way notes and stage write-back to Zoho CRM upon call completion.</p>
             </div>
           </div>
         </div>

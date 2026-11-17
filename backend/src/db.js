@@ -691,5 +691,51 @@ export function createCompletedCall(payload = {}) {
 
   persistDb();
   return getCallById(callId);
+}
 
+export function upsertLeadFromZoho(data) {
+  const phone = sanitizePhone(data.clientPhone || data.phone || '');
+  const email = String(data.email || '').trim().toLowerCase();
+  const id = String(data.id || '').trim();
+
+  let existing = null;
+  if (id) {
+    existing = get('SELECT * FROM leads WHERE id = ? LIMIT 1', [id]);
+  }
+  if (!existing && phone) {
+    existing = get('SELECT * FROM leads WHERE client_phone = ? LIMIT 1', [phone]);
+  }
+  if (!existing && email) {
+    existing = get('SELECT * FROM leads WHERE lower(trim(email)) = ? LIMIT 1', [email]);
+  }
+
+  const targetId = existing?.id || id || `zoho-lead-${randomUUID().slice(0, 8)}`;
+  const clientName = data.clientName || existing?.client_name || 'Zoho Lead';
+  const company = data.company || existing?.company || clientName;
+  const stage = data.stage || existing?.stage || 'Contacted';
+  const ownerId = data.ownerId || existing?.owner_id || 'Zoho User';
+  const hotness = data.hotness || existing?.hotness || 'warm';
+  const latestSummary = data.latestSummary || existing?.latest_summary || 'Synced from Zoho CRM';
+  const nextAction = data.nextAction || existing?.next_action || 'Follow up with lead';
+  const zohoUrl = data.zohoUrl || existing?.zoho_url || '';
+
+  if (existing) {
+    run(
+      `UPDATE leads
+       SET client_name = ?, client_phone = COALESCE(NULLIF(?, ''), client_phone),
+           email = COALESCE(NULLIF(?, ''), email), company = ?, stage = ?,
+           owner_id = ?, hotness = ?, zoho_url = COALESCE(NULLIF(?, ''), zoho_url)
+       WHERE id = ?`,
+      [clientName, phone, email, company, stage, ownerId, hotness, zohoUrl, existing.id]
+    );
+    return { inserted: false, updated: true, id: existing.id };
+  } else {
+    run(
+      `INSERT INTO leads
+       (id, client_name, client_phone, email, company, stage, owner_id, hotness, latest_summary, next_action, zoho_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [targetId, clientName, phone, email, company, stage, ownerId, hotness, latestSummary, nextAction, zohoUrl]
+    );
+    return { inserted: true, updated: false, id: targetId };
+  }
 }

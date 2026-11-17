@@ -14,6 +14,7 @@ import {
 import { receiveManyreachWebhook } from './services/manyreachWebhook.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
 import { getZohoSettings } from './services/zohoBridge.js';
+import { syncZohoCrm } from './services/zohoSync.js';
 
 function requireManyreachToken(req, res) {
   const expected = process.env.MANYREACH_WEBHOOK_SECRET || '';
@@ -168,6 +169,15 @@ export function createApp() {
 
   app.get('/api/settings/zoho', (_req, res) => {
     return res.json({ success: true, data: getZohoSettings() });
+  });
+
+  app.all('/api/settings/zoho/sync', async (_req, res) => {
+    try {
+      const result = await syncZohoCrm();
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
   });
 
   return app;

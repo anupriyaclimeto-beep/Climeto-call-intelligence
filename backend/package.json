@@ -9,6 +9,7 @@
     "start": "node src/server.js",
     "test": "node --test tests/manyreach.test.js",
     "sync:manyreach": "node src/jobs/manyreachSyncSkeleton.js",
+    "sync:zoho": "node src/jobs/zohoSyncRunner.js",
     "simulate:call": "node scripts/simulate_completed_call.js"
   },
   "keywords": [],
