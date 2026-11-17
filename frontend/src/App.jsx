@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowUpRight,
+  Briefcase,
   LayoutDashboard,
   Mail,
   Megaphone,
@@ -32,6 +33,7 @@ const navItems = [
   { to: '/platforms/whatsapp', label: 'WhatsApp', icon: MessageCircleMore },
   { to: '/platforms/email', label: 'Email', icon: Mail },
   { to: '/platforms/campaign', label: 'Campaigns', icon: Megaphone },
+  { to: '/zoho-crm', label: 'Zoho CRM', icon: Briefcase },
   { to: '/lead-360', label: 'Lead 360', icon: Users },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
@@ -184,6 +186,7 @@ function pageTitle(pathname) {
   if (pathname.startsWith('/calls/')) return 'Call Detail';
   if (pathname.startsWith('/calls')) return 'Calls';
   if (pathname.startsWith('/platforms/')) return 'Platform Feed';
+  if (pathname.startsWith('/zoho-crm')) return 'Zoho CRM';
   if (pathname.startsWith('/lead-360')) return 'Lead 360';
   if (pathname.startsWith('/leads/')) return 'Lead Detail';
   if (pathname.startsWith('/settings')) return 'Settings';
@@ -671,6 +674,178 @@ function Lead360Page({ refreshKey }) {
               </div>
             </Link>
           ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function ZohoCrmPage({ refreshKey }) {
+  const [search, setSearch] = useState('');
+  const [stageFilter, setStageFilter] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+
+  const leadsState = useAsync(() => api('/api/leads'), [refreshKey, syncing]);
+  const settingsState = useAsync(() => api('/api/settings/zoho'), []);
+
+  const leads = leadsState.data || [];
+  const settings = settingsState.data || {};
+  const crmUrl = settings.baseUrl || 'https://crm.zoho.in/crm/tab/Leads';
+
+  async function handleSync() {
+    try {
+      setSyncing(true);
+      setSyncMsg('');
+      const res = await fetch(`${API_BASE}/api/settings/zoho/sync`, { method: 'POST' });
+      const json = await res.json();
+      if (json.data?.ok) {
+        setSyncMsg(`Sync success! Processed: ${json.data.processed}, Inserted: ${json.data.inserted}, Updated: ${json.data.updated}`);
+      } else {
+        setSyncMsg(json.data?.message || json.message || 'Sync not ready. Check .env credentials.');
+      }
+    } catch (err) {
+      setSyncMsg(`Sync error: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const stages = Array.from(new Set(leads.map((l) => l.stage).filter(Boolean)));
+
+  const filtered = leads.filter((l) => {
+    const text = `${l.client_name} ${l.company} ${l.client_phone} ${l.email}`.toLowerCase();
+    const matchesSearch = !search || text.includes(search.toLowerCase());
+    const matchesStage = !stageFilter || l.stage === stageFilter;
+    return matchesSearch && matchesStage;
+  });
+
+  return (
+    <section className="page-stack">
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Zoho CRM Integration</div>
+            <h3>Zoho CRM Workspace</h3>
+            <p>Unified Zoho CRM records with live search, stage management, and direct CRM links.</p>
+          </div>
+          <div className="row-actions">
+            <span className={`pill ${settings.connected ? 'good' : 'neutral'}`}>
+              {settings.connected ? 'Zoho Connected' : 'Zoho Pending'}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={syncing}
+              onClick={handleSync}
+              style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
+            >
+              {syncing ? 'Syncing...' : 'Sync Zoho Now'}
+            </button>
+            <a
+              className="primary-button"
+              href={crmUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
+            >
+              Open Zoho CRM Portal
+              <ArrowUpRight size={15} />
+            </a>
+          </div>
+        </div>
+
+        {syncMsg ? (
+          <div className="status-card" style={{ marginBottom: '1rem' }}>
+            {syncMsg}
+          </div>
+        ) : null}
+
+        <div className="detail-grid" style={{ marginBottom: '1.25rem' }}>
+          <InfoCard title="Total Leads in System" value={leads.length} />
+          <InfoCard title="CRM Mode" value={settings.mode || 'template'} />
+          <InfoCard title="CRM Base URL" value={settings.baseUrl || 'https://crm.zoho.in/crm/tab/Leads'} />
+          <InfoCard
+            title="Auto-Sync Status"
+            value={
+              settings.hasCredentials
+                ? 'Active (Every 5 mins)'
+                : 'Navigation Linked (Add keys to .env for automatic sync)'
+            }
+          />
+        </div>
+
+        <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by client name, company, phone, or email..."
+            />
+          </div>
+          <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
+            <option value="">All Stages</option>
+            {stages.map((st) => (
+              <option key={st} value={st}>
+                {st}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {leadsState.loading ? <LoadingBlock label="Loading Zoho CRM leads..." /> : null}
+        {leadsState.error ? <ErrorCard message={leadsState.error} /> : null}
+        {!leadsState.loading && filtered.length === 0 ? (
+          <EmptyBlock label="No leads matching criteria." />
+        ) : null}
+
+        <div className="stack-list">
+          {filtered.map((lead) => {
+            const zohoUrl = buildZohoUrl(lead, settings);
+            return (
+              <div key={lead.id} className="list-row">
+                <div>
+                  <strong>{lead.client_name}</strong>
+                  <p>{lead.company || 'No Company'}</p>
+                  <p className="muted-line">{lead.client_phone || lead.email || '-'}</p>
+                </div>
+                <div>
+                  <div className="row-actions" style={{ marginBottom: '0.35rem' }}>
+                    <span className={`pill ${lead.hotness === 'hot' ? 'good' : 'neutral'}`}>
+                      {lead.stage || 'Contacted'}
+                    </span>
+                    {lead.hotness ? <span className="pill neutral">{lead.hotness} priority</span> : null}
+                  </div>
+                  <strong>{lead.latest_summary}</strong>
+                  <p>{lead.next_action || 'Follow up with lead'}</p>
+                </div>
+                <div className="meta-align">
+                  <div className="row-actions">
+                    <Link
+                      className="ghost-button"
+                      to={`/leads/${lead.id}`}
+                      style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                    >
+                      Lead 360
+                    </Link>
+                    {zohoUrl ? (
+                      <a
+                        className="primary-button"
+                        href={zohoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+                      >
+                        Open in Zoho
+                        <ArrowUpRight size={13} />
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
     </section>
@@ -1190,6 +1365,7 @@ function WorkspaceRoutes() {
         <Route path="/calls" element={<CallsPage refreshKey={refreshKey} />} />
         <Route path="/calls/:callId" element={<CallDetailPage refreshKey={refreshKey} />} />
         <Route path="/platforms/:platform" element={<PlatformPage />} />
+        <Route path="/zoho-crm" element={<ZohoCrmPage refreshKey={refreshKey} />} />
         <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />
         <Route path="/leads/:leadId" element={<LeadDetailPage refreshKey={refreshKey} />} />
         <Route path="/settings" element={<SettingsPage />} />
