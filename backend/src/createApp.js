@@ -14,6 +14,12 @@ import {
 import { receiveManyreachWebhook } from './services/manyreachWebhook.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
 import { getZohoSettings } from './services/zohoBridge.js';
+import { syncZohoCrm, syncZohoAccounts, getZohoAccountsPayload } from './services/zohoSync.js';
+import {
+  getZohoEmailsPayload,
+  syncZohoEmails,
+  receiveZohoEmailWebhook,
+} from './services/zohoEmailSync.js';
 
 function requireManyreachToken(req, res) {
   const expected = process.env.MANYREACH_WEBHOOK_SECRET || '';
@@ -168,6 +174,57 @@ export function createApp() {
 
   app.get('/api/settings/zoho', (_req, res) => {
     return res.json({ success: true, data: getZohoSettings() });
+  });
+
+  app.all('/api/settings/zoho/sync', async (_req, res) => {
+    try {
+      const result = await syncZohoCrm();
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get('/api/zoho/accounts', (req, res) => {
+    const search = String(req.query.search || '').trim();
+    return res.json({ success: true, data: getZohoAccountsPayload({ search }) });
+  });
+
+  app.all('/api/zoho/accounts/sync', async (_req, res) => {
+    try {
+      const result = await syncZohoAccounts();
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get('/api/zoho/emails', (req, res) => {
+    const filters = {
+      executive: String(req.query.executive || '').trim(),
+      direction: String(req.query.direction || '').trim(),
+      search: String(req.query.search || '').trim(),
+      limit: Number(req.query.limit || 50),
+    };
+    return res.json({ success: true, data: getZohoEmailsPayload(filters) });
+  });
+
+  app.all('/api/zoho/emails/sync', async (_req, res) => {
+    try {
+      const result = await syncZohoEmails();
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post('/api/webhooks/zoho-emails', (req, res) => {
+    try {
+      const result = receiveZohoEmailWebhook(req.body);
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
   });
 
   return app;

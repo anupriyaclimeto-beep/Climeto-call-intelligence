@@ -1,7 +1,11 @@
 import { id as migration001Id, up as migration001Up } from './001_campaign_events.js';
+import { id as migration002Id, up as migration002Up } from './002_zoho_accounts.js';
+import { id as migration003Id, up as migration003Up } from './003_zoho_emails.js';
 
 const migrations = [
   { id: migration001Id, up: migration001Up },
+  { id: migration002Id, up: migration002Up },
+  { id: migration003Id, up: migration003Up },
 ];
 
 function all(db, query, params = []) {
