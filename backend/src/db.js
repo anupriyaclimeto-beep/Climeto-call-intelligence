@@ -51,7 +51,7 @@ export function all(query, params = []) {
   return rows;
 }
 
-function get(query, params = []) {
+export function get(query, params = []) {
   return all(query, params)[0] || null;
 }
 
@@ -142,6 +142,7 @@ export async function initializeDb() {
   backfillSeededCampaignEvents();
   seedZohoAccountsIfEmpty();
   seedZohoEmailsIfEmpty();
+  seedWhatsAppMessagesIfEmpty();
   persistDb();
 }
 
@@ -390,7 +391,8 @@ export function getLeadById(id) {
   return { lead, calls: leadCalls, activities: leadActivities, timeline };
 }
 
-export function listActivities(platform = '') {
+export function listActivities(arg = '') {
+  const platform = typeof arg === 'object' && arg !== null ? (arg.platform || '') : String(arg || '');
   const params = [];
   let query = `
     SELECT a.*, l.client_name, l.client_phone
@@ -1235,4 +1237,368 @@ export function seedZohoEmailsIfEmpty() {
     console.warn('[Zoho DB] Notice in seedZohoEmailsIfEmpty:', err.message);
   }
 }
+
+export function upsertWhatsAppMessage(data) {
+  const externalId = String(data.externalId || data.external_id || data.id || '').trim();
+  const id = `wa-${externalId || randomUUID().slice(0, 8)}`;
+  const deviceId = String(data.deviceId || data.device_id || 'android-device').trim();
+  const executiveName = String(data.executiveName || data.executive_name || 'Ambuj Pathak').trim();
+  const rawPhone = String(data.clientPhone || data.client_phone || '').trim();
+  const clientPhone = sanitizePhone(rawPhone);
+  let clientName = String(data.clientName || data.client_name || '').trim();
+  const direction = String(data.direction || 'incoming').toLowerCase() === 'outgoing' ? 'outgoing' : 'incoming';
+  const message = String(data.message || data.text || data.body || '').trim();
+  const timestamp = data.timestamp || data.time || new Date().toISOString();
+  const status = String(data.status || (direction === 'incoming' ? 'received' : 'sent'));
+
+  // Attempt to match lead by phone (full or last 10 digits)
+  let lead = null;
+  if (clientPhone) {
+    lead = get('SELECT * FROM leads WHERE client_phone = ? LIMIT 1', [clientPhone]);
+    if (!lead) {
+      const digits = clientPhone.replace(/\D/g, '');
+      const last10 = digits.slice(-10);
+      if (last10.length === 10) {
+        lead = get('SELECT * FROM leads WHERE client_phone LIKE ? LIMIT 1', [`%${last10}`]);
+      }
+    }
+  }
+
+  // Auto-create a new CRM lead for brand-new WhatsApp-first contacts (Company Work SIM mode)
+  const autoCreateLead = process.env.WHATSAPP_AUTO_CREATE_LEAD !== 'false';
+  let createdNewLead = false;
+  if (!lead && !data.leadId && !data.lead_id && clientPhone && autoCreateLead) {
+    const newLeadId = `lead-wa-${randomUUID().slice(0, 8)}`;
+    const displayName = clientName || clientPhone;
+    const ownerRow =
+      (data.ownerId ? get('SELECT id FROM users WHERE id = ?', [data.ownerId]) : null) ||
+      get('SELECT id FROM users WHERE name LIKE ? LIMIT 1', [`%${executiveName}%`]) ||
+      get('SELECT id FROM users ORDER BY rowid ASC LIMIT 1');
+
+    run(
+      `INSERT INTO leads
+       (id, client_name, client_phone, email, company, stage, owner_id, hotness, latest_summary, next_action, zoho_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newLeadId,
+        displayName,
+        clientPhone,
+        '',
+        displayName,
+        'Contacted',
+        ownerRow?.id || 'u-ambuj',
+        direction === 'incoming' ? 'hot' : 'warm',
+        message ? `WhatsApp: ${message.slice(0, 100)}` : 'New WhatsApp inquiry',
+        direction === 'incoming'
+          ? 'Reply to WhatsApp inquiry and qualify lead'
+          : 'Follow up on WhatsApp conversation',
+        '',
+      ],
+    );
+    lead = get('SELECT * FROM leads WHERE id = ?', [newLeadId]);
+    createdNewLead = true;
+  }
+
+  const leadId = data.leadId || data.lead_id || lead?.id || null;
+  if (!clientName && lead?.client_name) {
+    clientName = lead.client_name;
+  }
+  if (!clientName) {
+    clientName = clientPhone || 'WhatsApp Contact';
+  }
+
+  // Check if already exists by external_id
+  const existing = externalId ? get('SELECT id FROM whatsapp_messages WHERE external_id = ?', [externalId]) : null;
+
+  if (existing) {
+    run(
+      `UPDATE whatsapp_messages
+       SET device_id = ?, lead_id = COALESCE(?, lead_id), executive_name = ?, client_name = ?,
+           client_phone = ?, direction = ?, message = ?, timestamp = ?, status = ?
+       WHERE id = ?`,
+      [
+        deviceId,
+        leadId,
+        executiveName,
+        clientName,
+        clientPhone,
+        direction,
+        message,
+        timestamp,
+        status,
+        existing.id,
+      ]
+    );
+  } else {
+    run(
+      `INSERT INTO whatsapp_messages
+       (id, external_id, device_id, lead_id, executive_name, client_name, client_phone, direction, message, timestamp, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        externalId || id,
+        deviceId,
+        leadId,
+        executiveName,
+        clientName,
+        clientPhone,
+        direction,
+        message,
+        timestamp,
+        status,
+        new Date().toISOString(),
+      ]
+    );
+  }
+
+  // Update lead status and summary if it's an incoming message
+  if (lead && direction === 'incoming' && message) {
+    run(
+      `UPDATE leads
+       SET latest_summary = ?, hotness = 'hot'
+       WHERE id = ?`,
+      [`WhatsApp: ${message.slice(0, 100)}`, lead.id]
+    );
+  }
+
+  // Sync to activities table for Lead 360 & unified feed
+  const actId = `act-${id}`;
+  const existingAct = get('SELECT id FROM activities WHERE id = ?', [actId]);
+  const actTitle = direction === 'incoming'
+    ? `💬 WhatsApp received from ${clientName}`
+    : `📤 WhatsApp sent by ${executiveName}`;
+
+  if (existingAct) {
+    run(
+      'UPDATE activities SET lead_id = COALESCE(?, lead_id), title = ?, detail = ?, created_at = ? WHERE id = ?',
+      [leadId, actTitle, message, timestamp, actId]
+    );
+  } else {
+    run(
+      'INSERT INTO activities (id, lead_id, platform, title, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [actId, leadId, 'whatsapp', actTitle, message, timestamp]
+    );
+  }
+
+  persistDb();
+
+  return get('SELECT * FROM whatsapp_messages WHERE id = ?', [existing ? existing.id : id]);
+}
+
+export function listWhatsAppMessages(filters = {}) {
+  const conditions = ['1=1'];
+  const params = [];
+
+  if (filters.search) {
+    conditions.push(
+      '(m.client_name LIKE ? OR m.client_phone LIKE ? OR m.executive_name LIKE ? OR m.message LIKE ?)'
+    );
+    const term = `%${filters.search}%`;
+    params.push(term, term, term, term);
+  }
+
+  if (filters.direction) {
+    conditions.push('m.direction = ?');
+    params.push(filters.direction.toLowerCase());
+  }
+
+  if (filters.executive) {
+    conditions.push('m.executive_name LIKE ?');
+    params.push(`%${filters.executive}%`);
+  }
+
+  if (filters.leadId) {
+    conditions.push('m.lead_id = ?');
+    params.push(filters.leadId);
+  }
+
+  if (filters.phone) {
+    const digits = filters.phone.replace(/\D/g, '').slice(-10);
+    conditions.push('m.client_phone LIKE ?');
+    params.push(`%${digits}%`);
+  }
+
+  const limit = Number(filters.limit) || 100;
+  params.push(limit);
+
+  const query = `
+    SELECT m.*, l.company, l.stage, l.hotness
+    FROM whatsapp_messages m
+    LEFT JOIN leads l ON m.lead_id = l.id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY m.timestamp DESC
+    LIMIT ?
+  `;
+
+  return all(query, params);
+}
+
+export function getWhatsAppStats() {
+  const row = get(`
+    SELECT
+      COUNT(*) AS total_messages,
+      SUM(CASE WHEN direction = 'incoming' THEN 1 ELSE 0 END) AS incoming_count,
+      SUM(CASE WHEN direction = 'outgoing' THEN 1 ELSE 0 END) AS outgoing_count,
+      COUNT(DISTINCT client_phone) AS active_contacts,
+      COUNT(DISTINCT executive_name) AS active_executives
+    FROM whatsapp_messages
+  `);
+
+  const execRows = all(`
+    SELECT executive_name, COUNT(*) AS message_count
+    FROM whatsapp_messages
+    GROUP BY executive_name
+    ORDER BY message_count DESC
+  `);
+
+  return {
+    total_messages: row?.total_messages ?? 0,
+    incoming_count: row?.incoming_count ?? 0,
+    outgoing_count: row?.outgoing_count ?? 0,
+    active_contacts: row?.active_contacts ?? 0,
+    active_executives: row?.active_executives ?? 0,
+    by_executive: execRows,
+  };
+}
+
+export function clearDummyWhatsAppMessages() {
+  const dummyRows = all(
+    `SELECT id FROM whatsapp_messages
+     WHERE device_id = 'd-ambuj-1'
+        OR external_id LIKE 'wa-msg-%'
+        OR external_id LIKE 'sim-wa-%'`,
+  );
+  for (const row of dummyRows) {
+    run('DELETE FROM whatsapp_messages WHERE id = ?', [row.id]);
+    run('DELETE FROM activities WHERE id = ?', [`act-${row.id}`]);
+  }
+  persistDb();
+  return dummyRows.length;
+}
+
+export function seedWhatsAppMessagesIfEmpty() {
+  try {
+    if (!shouldSeedSampleData && process.env.NODE_ENV !== 'test') {
+      return;
+    }
+    const row = get('SELECT COUNT(*) AS count FROM whatsapp_messages');
+    if ((row?.count ?? 0) === 0) {
+      const sampleMessages = [
+        {
+          externalId: 'wa-msg-101',
+          deviceId: 'd-ambuj-1',
+          leadId: 'lead-1',
+          executiveName: 'Ambuj Pathak',
+          clientName: 'ABC Polymers',
+          clientPhone: '+919215144541',
+          direction: 'incoming',
+          message: 'Sir kal tak quotation update karke share kar dijiye. Volume approx 50 MT per month hoga.',
+          timestamp: '2026-11-17T11:45:00Z',
+          status: 'received',
+        },
+        {
+          externalId: 'wa-msg-102',
+          deviceId: 'd-ambuj-1',
+          leadId: 'lead-1',
+          executiveName: 'Ambuj Pathak',
+          clientName: 'ABC Polymers',
+          clientPhone: '+919215144541',
+          direction: 'outgoing',
+          message: 'Ji sir, definitely. Main kal subah 11:00 AM tak revised quote with CPCB certificate bhej raha hoon.',
+          timestamp: '2026-11-17T11:48:00Z',
+          status: 'sent',
+        },
+        {
+          externalId: 'wa-msg-103',
+          deviceId: 'd-ambuj-1',
+          leadId: 'lead-2',
+          executiveName: 'Ambuj Pathak',
+          clientName: 'Vardhman Plastics',
+          clientPhone: '+919990689777',
+          direction: 'incoming',
+          message: 'Hamara Category II plastic waste ka certificate draft WhatsApp pe bhejo ek baar.',
+          timestamp: '2026-11-17T15:20:00Z',
+          status: 'received',
+        },
+        {
+          externalId: 'wa-msg-104',
+          deviceId: 'd-ambuj-1',
+          leadId: 'lead-2',
+          executiveName: 'Ambuj Pathak',
+          clientName: 'Vardhman Plastics',
+          clientPhone: '+919990689777',
+          direction: 'outgoing',
+          message: 'Shared specimen certificate PDF. Please review and confirm your quarterly targets.',
+          timestamp: '2026-11-17T15:25:00Z',
+          status: 'sent',
+        },
+      ];
+
+      for (const msg of sampleMessages) {
+        upsertWhatsAppMessage(msg);
+      }
+    }
+  } catch (err) {
+    console.warn('[WhatsApp DB] Notice in seedWhatsAppMessagesIfEmpty:', err.message);
+  }
+}
+
+export function listExecutives() {
+  return all(`
+    SELECT u.id, u.name, u.email, u.role, d.employee_phone AS phone
+    FROM users u
+    LEFT JOIN devices d ON d.user_id = u.id
+    ORDER BY u.rowid ASC
+  `);
+}
+
+export function createExecutive({ name, email = '', phone = '', role = 'executive' } = {}) {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) {
+    throw new Error('Executive name is required');
+  }
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanPhone = sanitizePhone(phone || '');
+
+  if (cleanEmail) {
+    const existing = get('SELECT id FROM users WHERE LOWER(email) = ?', [cleanEmail]);
+    if (existing) {
+      throw new Error('An executive with this email already exists');
+    }
+  }
+
+  const slug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 16) || 'exec';
+  const id = `u-${slug}-${randomUUID().slice(0, 4)}`;
+
+  run(
+    'INSERT INTO users (id, name, email, role) VALUES (?, ?, ?, ?)',
+    [id, cleanName, cleanEmail || `${slug}@climeto.com`, role || 'executive'],
+  );
+
+  if (cleanPhone) {
+    run(
+      'INSERT INTO devices (id, user_id, employee_name, employee_phone) VALUES (?, ?, ?, ?)',
+      [`d-${slug}-${randomUUID().slice(0, 4)}`, id, cleanName, cleanPhone],
+    );
+  }
+
+  persistDb();
+  return get(
+    `SELECT u.id, u.name, u.email, u.role, d.employee_phone AS phone
+     FROM users u
+     LEFT JOIN devices d ON d.user_id = u.id
+     WHERE u.id = ?`,
+    [id],
+  );
+}
+
+export function deleteExecutive(id) {
+  const existing = get('SELECT id FROM users WHERE id = ?', [id]);
+  if (!existing) return false;
+  run('DELETE FROM devices WHERE user_id = ?', [id]);
+  run('DELETE FROM users WHERE id = ?', [id]);
+  persistDb();
+  return true;
+}
+
 

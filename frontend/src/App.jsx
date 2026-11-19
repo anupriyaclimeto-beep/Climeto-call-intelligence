@@ -1575,7 +1575,624 @@ function ZohoEmailsPage() {
   );
 }
 
-function PlatformPage() {
+function WhatsAppFeedPage({ refreshKey }) {
+  const [messages, setMessages] = useState([]);
+  const [stats, setStats] = useState({
+    total_messages: 0,
+    incoming_count: 0,
+    outgoing_count: 0,
+    active_contacts: 0,
+    active_executives: 0,
+    by_executive: [],
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [selectedExec, setSelectedExec] = useState('');
+  const [selectedDirection, setSelectedDirection] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [linkingExecId, setLinkingExecId] = useState(null);
+  const [linkingQr, setLinkingQr] = useState(null);
+  const [linkingStatus, setLinkingStatus] = useState('');
+  const [sessionActionMsg, setSessionActionMsg] = useState('');
+  const [newExecName, setNewExecName] = useState('');
+  const [newExecPhone, setNewExecPhone] = useState('');
+  const [newExecEmail, setNewExecEmail] = useState('');
+  const [addingExec, setAddingExec] = useState(false);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      setLoadingSessions(true);
+      const res = await fetch(`${API_BASE}/api/whatsapp/sessions`);
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      const json = await res.json();
+      const list = json.data || [];
+      setSessions(list);
+      return list;
+    } catch (err) {
+      console.warn('Failed to load WhatsApp sessions:', err.message);
+      return [];
+    } finally {
+      setLoadingSessions(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showModal) {
+      loadSessions();
+    }
+  }, [showModal, loadSessions, refreshKey]);
+
+  // Poll session status every 2s while waiting for QR generation or scan
+  useEffect(() => {
+    if (!showModal || !linkingExecId) return undefined;
+    const timer = setInterval(async () => {
+      const list = await loadSessions();
+      const current = list.find((item) => item.executiveId === linkingExecId);
+      if (current?.qr) {
+        setLinkingQr(current.qr);
+        setLinkingStatus('Scan this QR code with WhatsApp on the executive phone');
+      } else if (current?.status === 'connected') {
+        setLinkingQr(null);
+        setLinkingStatus(`Connected! Phone: ${current.phone || 'Ready'}`);
+        setLinkingExecId(null);
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [showModal, linkingExecId, loadSessions]);
+
+  async function handleAddExecutive(e) {
+    e.preventDefault();
+    if (!newExecName.trim()) {
+      setSessionActionMsg('Please enter executive name.');
+      return;
+    }
+    try {
+      setAddingExec(true);
+      setSessionActionMsg('');
+      const res = await fetch(`${API_BASE}/api/executives`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newExecName.trim(),
+          phone: newExecPhone.trim(),
+          email: newExecEmail.trim(),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || 'Failed to add executive');
+      }
+      setNewExecName('');
+      setNewExecPhone('');
+      setNewExecEmail('');
+      setSessionActionMsg(`Executive "${json.data.name}" added! Now click "Link Phone" to scan QR.`);
+      await loadSessions();
+    } catch (err) {
+      setSessionActionMsg(`Error: ${err.message}`);
+    } finally {
+      setAddingExec(false);
+    }
+  }
+
+  async function handleRemoveExecutive(executiveId, executiveName) {
+    try {
+      setSessionActionMsg(`Removing ${executiveName}...`);
+      const res = await fetch(`${API_BASE}/api/executives/${executiveId}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed to remove executive');
+      if (linkingExecId === executiveId) {
+        setLinkingExecId(null);
+        setLinkingQr(null);
+      }
+      setSessionActionMsg(`Removed ${executiveName}.`);
+      await loadSessions();
+    } catch (err) {
+      setSessionActionMsg(`Error: ${err.message}`);
+    }
+  }
+
+  async function handleStartLinking(executiveId) {
+    try {
+      setLinkingExecId(executiveId);
+      setLinkingStatus('Connecting to WhatsApp server & generating QR code...');
+      setLinkingQr(null);
+      setSessionActionMsg('');
+
+      const res = await fetch(`${API_BASE}/api/whatsapp/sessions/${executiveId}/start`, {
+        method: 'POST',
+      });
+      const json = await res.json();
+      if (json.data?.qr) {
+        setLinkingQr(json.data.qr);
+        setLinkingStatus('Scan this QR code with WhatsApp on the executive phone');
+      } else if (json.data?.status === 'connected') {
+        setLinkingStatus(`Connected! Phone: ${json.data.phone || 'Ready'}`);
+      }
+      await loadSessions();
+    } catch (err) {
+      setLinkingStatus(`Error: ${err.message}`);
+    }
+  }
+
+  async function handleDisconnectSession(executiveId) {
+    try {
+      setSessionActionMsg('Disconnecting...');
+      await fetch(`${API_BASE}/api/whatsapp/sessions/${executiveId}/disconnect`, {
+        method: 'POST',
+      });
+      setSessionActionMsg('Disconnected successfully.');
+      if (linkingExecId === executiveId) {
+        setLinkingExecId(null);
+        setLinkingQr(null);
+      }
+      await loadSessions();
+    } catch (err) {
+      setSessionActionMsg(`Error: ${err.message}`);
+    }
+  }
+
+  const loadMessages = useCallback(
+    async ({ silent } = {}) => {
+      try {
+        if (!silent) setLoading(true);
+        const params = new URLSearchParams();
+        if (search) params.set('search', search);
+        if (selectedExec) params.set('executive', selectedExec);
+        if (selectedDirection) params.set('direction', selectedDirection);
+
+        const res = await fetch(`${API_BASE}/api/whatsapp/messages?${params.toString()}`);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const json = await res.json();
+        const payload = json.data || {};
+        setMessages(payload.messages || []);
+        if (payload.stats) setStats(payload.stats);
+        setError('');
+      } catch (err) {
+        setError(err.message || 'Failed to load WhatsApp messages');
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [search, selectedExec, selectedDirection],
+  );
+
+  useEffect(() => {
+    loadMessages({ silent: false });
+  }, [loadMessages, refreshKey]);
+
+  return (
+    <section className="page-stack">
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Platform Feed</div>
+            <h3>WhatsApp Communications</h3>
+            <p>
+              Live incoming and outgoing WhatsApp messages synced from sales executives' work SIMs.
+            </p>
+          </div>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => setShowModal(true)}
+              style={{ padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}
+            >
+              🔗 Link Executive Device (Server QR)
+            </button>
+          </div>
+        </div>
+
+        <div className="stats-grid" style={{ marginTop: '1rem', marginBottom: '1.25rem' }}>
+          <StatCard label="Total Messages" value={stats.total_messages} />
+          <StatCard label="Incoming (Clients)" value={stats.incoming_count} />
+          <StatCard label="Outgoing (Executives)" value={stats.outgoing_count} />
+          <StatCard label="Active Contacts" value={stats.active_contacts} />
+        </div>
+
+        <div className="filter-bar" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+          <div className="search-box" style={{ flex: '1 1 240px' }}>
+            <Search size={16} />
+            <input
+              type="text"
+              placeholder="Search by client, phone, executive, or message text..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <button
+              type="button"
+              className={`ghost-button ${selectedDirection === '' ? 'active' : ''}`}
+              style={{
+                padding: '0.4rem 0.8rem',
+                fontWeight: selectedDirection === '' ? 600 : 400,
+                backgroundColor: selectedDirection === '' ? 'var(--color-surface-hover)' : 'transparent',
+              }}
+              onClick={() => setSelectedDirection('')}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`ghost-button ${selectedDirection === 'incoming' ? 'active' : ''}`}
+              style={{
+                padding: '0.4rem 0.8rem',
+                fontWeight: selectedDirection === 'incoming' ? 600 : 400,
+                backgroundColor: selectedDirection === 'incoming' ? 'var(--color-surface-hover)' : 'transparent',
+              }}
+              onClick={() => setSelectedDirection('incoming')}
+            >
+              Incoming (Clients)
+            </button>
+            <button
+              type="button"
+              className={`ghost-button ${selectedDirection === 'outgoing' ? 'active' : ''}`}
+              style={{
+                padding: '0.4rem 0.8rem',
+                fontWeight: selectedDirection === 'outgoing' ? 600 : 400,
+                backgroundColor: selectedDirection === 'outgoing' ? 'var(--color-surface-hover)' : 'transparent',
+              }}
+              onClick={() => setSelectedDirection('outgoing')}
+            >
+              Outgoing (Executives)
+            </button>
+          </div>
+
+          {stats.by_executive?.length > 1 ? (
+            <select
+              value={selectedExec}
+              onChange={(e) => setSelectedExec(e.target.value)}
+              style={{
+                padding: '0.4rem 0.8rem',
+                borderRadius: '6px',
+                border: '1px solid var(--color-border)',
+                background: 'var(--color-surface)',
+                color: 'var(--color-text)',
+              }}
+            >
+              <option value="">All Executives</option>
+              {stats.by_executive.map((ex) => (
+                <option key={ex.executive_name} value={ex.executive_name}>
+                  {ex.executive_name} ({ex.message_count})
+                </option>
+              ))}
+            </select>
+          ) : null}
+        </div>
+
+        {loading ? <LoadingBlock label="Loading WhatsApp conversations..." /> : null}
+        {error ? <ErrorCard message={error} /> : null}
+
+        <div className="stack-list">
+          {messages.map((item) => (
+            <div
+              key={item.id}
+              className="list-row"
+              style={{
+                borderLeft: item.direction === 'incoming' ? '4px solid #10b981' : '4px solid #3b82f6',
+                paddingLeft: '0.85rem',
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                  <span className={`pill ${item.direction === 'incoming' ? 'good' : 'neutral'}`}>
+                    {item.direction === 'incoming' ? '💬 Received from Client' : '📤 Sent by Exec'}
+                  </span>
+                  {item.lead_id ? (
+                    <Link
+                      to={`/leads/${item.lead_id}`}
+                      style={{
+                        fontWeight: 600,
+                        color: 'inherit',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                      }}
+                    >
+                      {item.client_name || item.client_phone}
+                      <ArrowUpRight size={13} />
+                    </Link>
+                  ) : (
+                    <strong>{item.client_name || item.client_phone}</strong>
+                  )}
+                  {item.stage ? (
+                    <span className="pill neutral" style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}>
+                      {item.stage}
+                    </span>
+                  ) : null}
+                </div>
+                <p style={{ margin: '0.15rem 0', color: 'var(--color-text-secondary)', fontSize: '0.84rem' }}>
+                  📱 Phone: <strong>{item.client_phone}</strong> | Executive: <strong>{item.executive_name}</strong> {item.device_id ? `(${item.device_id})` : ''}
+                </p>
+                <div
+                  style={{
+                    background: item.direction === 'incoming' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(59, 130, 246, 0.08)',
+                    borderRadius: '8px',
+                    padding: '0.65rem 0.85rem',
+                    marginTop: '0.4rem',
+                    fontSize: '0.9rem',
+                    lineHeight: '1.45',
+                  }}
+                >
+                  {item.message}
+                </div>
+              </div>
+              <div className="meta-align" style={{ minWidth: '130px', textAlign: 'right' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                  {formatDateTime(item.timestamp)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {!loading && !error && messages.length === 0 ? (
+          <EmptyBlock label="No WhatsApp messages matching the selected criteria." />
+        ) : null}
+
+        {showModal ? (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.65)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              padding: '1rem',
+            }}
+          >
+            <div
+              className="card"
+              style={{
+                maxWidth: '560px',
+                width: '100%',
+                maxHeight: '90vh',
+                overflowY: 'auto',
+                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.3)',
+              }}
+            >
+              <div className="section-head" style={{ marginBottom: '1rem' }}>
+                <div>
+                  <div className="eyebrow">Multi-Device Server Bridge</div>
+                  <h3>Link Sales Executive WhatsApp</h3>
+                  <p>
+                    Connects directly to the cloud backend. Captures both <strong>incoming</strong> and <strong>outgoing</strong> lead chats reliably.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    setShowModal(false);
+                    setLinkingExecId(null);
+                    setLinkingQr(null);
+                  }}
+                  style={{ fontSize: '1.2rem', padding: '0.2rem 0.6rem' }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {sessionActionMsg ? (
+                <div style={{ marginBottom: '0.75rem' }}>
+                  <span className="pill neutral">{sessionActionMsg}</span>
+                </div>
+              ) : null}
+
+              <form
+                onSubmit={handleAddExecutive}
+                style={{
+                  background: 'var(--color-surface-hover, #f8fafc)',
+                  border: '1px solid var(--color-border, #e2e8f0)',
+                  borderRadius: '10px',
+                  padding: '0.75rem',
+                  marginBottom: '1rem',
+                }}
+              >
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-secondary)' }}>
+                  + Add New Sales Executive
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    placeholder="Executive Name (e.g. Sahil)"
+                    value={newExecName}
+                    onChange={(e) => setNewExecName(e.target.value)}
+                    required
+                    style={{
+                      flex: '1 1 140px',
+                      padding: '0.45rem 0.65rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--color-border, #cbd5e1)',
+                      fontSize: '0.84rem',
+                    }}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Work Phone (+91...)"
+                    value={newExecPhone}
+                    onChange={(e) => setNewExecPhone(e.target.value)}
+                    style={{
+                      flex: '1 1 130px',
+                      padding: '0.45rem 0.65rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--color-border, #cbd5e1)',
+                      fontSize: '0.84rem',
+                    }}
+                  />
+                  <input
+                    type="email"
+                    placeholder="Email (optional)"
+                    value={newExecEmail}
+                    onChange={(e) => setNewExecEmail(e.target.value)}
+                    style={{
+                      flex: '1 1 150px',
+                      padding: '0.45rem 0.65rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--color-border, #cbd5e1)',
+                      fontSize: '0.84rem',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={addingExec}
+                    style={{ padding: '0.45rem 0.85rem', fontSize: '0.82rem' }}
+                  >
+                    {addingExec ? 'Adding...' : 'Add'}
+                  </button>
+                </div>
+              </form>
+
+              {linkingExecId && !linkingQr ? (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    padding: '0.85rem',
+                    background: 'var(--color-surface-hover, #f8fafc)',
+                    borderRadius: '8px',
+                    marginBottom: '1rem',
+                    border: '1px solid var(--color-border)',
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  ⏳ {linkingStatus || 'Generating QR code...'}
+                </div>
+              ) : null}
+
+              {linkingQr ? (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    padding: '1rem',
+                    background: 'var(--color-surface-hover, #f8fafc)',
+                    borderRadius: '8px',
+                    marginBottom: '1rem',
+                    border: '1px solid var(--color-border)',
+                  }}
+                >
+                  <h4 style={{ margin: '0 0 0.5rem 0' }}>Scan with Executive's Phone</h4>
+                  <img
+                    src={linkingQr}
+                    alt="WhatsApp QR Code"
+                    style={{
+                      width: '240px',
+                      height: '240px',
+                      display: 'block',
+                      margin: '0 auto',
+                      borderRadius: '8px',
+                      border: '4px solid white',
+                    }}
+                  />
+                  <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}>
+                    📱 <strong>Steps on Phone:</strong> WhatsApp ➔ <strong>3 dots (Menu)</strong> ➔ <strong>Linked Devices</strong> ➔ <strong>Link a Device</strong> ➔ Scan this QR.
+                  </p>
+                  <p style={{ fontSize: '0.8rem', color: '#10b981', fontWeight: 600 }}>
+                    {linkingStatus}
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="stack-list">
+                {sessions.map((sess) => (
+                  <div
+                    key={sess.executiveId}
+                    className="list-row"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0.75rem',
+                    }}
+                  >
+                    <div>
+                      <strong>{sess.executiveName}</strong>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', margin: '0.1rem 0' }}>
+                        {sess.executiveEmail} {sess.phone ? `| 📱 ${sess.phone}` : ''}
+                      </p>
+                      <div style={{ marginTop: '0.25rem' }}>
+                        <span className={`pill ${sess.status === 'connected' ? 'good' : 'neutral'}`} style={{ fontSize: '0.75rem' }}>
+                          {sess.status === 'connected'
+                            ? '🟢 Connected (Multi-Device)'
+                            : sess.status === 'qr_ready'
+                              ? '🟡 QR Ready'
+                              : sess.status === 'connecting'
+                                ? '🔵 Connecting...'
+                                : '⚪ Not Linked'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center' }}>
+                      {sess.status === 'connected' ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => handleDisconnectSession(sess.executiveId)}
+                          style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem', color: '#ef4444' }}
+                        >
+                          Disconnect
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={() => handleStartLinking(sess.executiveId)}
+                            style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                          >
+                            {linkingExecId === sess.executiveId ? 'Regenerate QR' : 'Link Phone'}
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => handleRemoveExecutive(sess.executiveId, sess.executiveName)}
+                            title="Remove executive"
+                            style={{ padding: '0.3rem 0.5rem', fontSize: '0.78rem', color: '#ef4444' }}
+                          >
+                            ✕
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginTop: '1.25rem', textAlign: 'right' }}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    setShowModal(false);
+                    setLinkingExecId(null);
+                    setLinkingQr(null);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
+function PlatformPage({ refreshKey }) {
   const { platform } = useParams();
   const current = platformCopy[platform] || {
     title: 'Platform',
@@ -1588,6 +2205,10 @@ function PlatformPage() {
 
   if (platform === 'email') {
     return <ZohoEmailsPage />;
+  }
+
+  if (platform === 'whatsapp') {
+    return <WhatsAppFeedPage refreshKey={refreshKey} />;
   }
 
   const state = useAsync(() => api(`/api/activities?platform=${platform}`), [platform]);
@@ -1839,6 +2460,25 @@ function useRealtimeUpdates() {
           noticeTimer = window.setTimeout(() => {
             setLiveNotice('');
           }, 5000);
+        } else if (message.type === 'whatsapp.received') {
+          const clientName = message.payload?.client_name || message.payload?.client_phone || 'WhatsApp contact';
+          const snippet = message.payload?.message ? `: "${message.payload.message.slice(0, 45)}..."` : '';
+          setRefreshKey((value) => value + 1);
+          setLiveNotice(`💬 New WhatsApp from ${clientName}${snippet}`);
+
+          clearTimeout(noticeTimer);
+          noticeTimer = window.setTimeout(() => {
+            setLiveNotice('');
+          }, 5000);
+        } else if (message.type === 'whatsapp.session_updated') {
+          setRefreshKey((value) => value + 1);
+          if (message.payload?.status === 'connected') {
+            setLiveNotice(`🟢 WhatsApp linked for ${message.payload.executiveName || 'Executive'} (${message.payload.phone || 'Ready'})`);
+            clearTimeout(noticeTimer);
+            noticeTimer = window.setTimeout(() => {
+              setLiveNotice('');
+            }, 6000);
+          }
         }
       } catch {
         // Ignore malformed events and keep the stream alive.
@@ -1863,7 +2503,7 @@ function WorkspaceRoutes() {
         <Route path="/" element={<DashboardPage refreshKey={refreshKey} />} />
         <Route path="/calls" element={<CallsPage refreshKey={refreshKey} />} />
         <Route path="/calls/:callId" element={<CallDetailPage refreshKey={refreshKey} />} />
-        <Route path="/platforms/:platform" element={<PlatformPage />} />
+        <Route path="/platforms/:platform" element={<PlatformPage refreshKey={refreshKey} />} />
         <Route path="/zoho-crm" element={<ZohoCrmPage refreshKey={refreshKey} />} />
         <Route path="/zoho-accounts" element={<ZohoAccountsPage refreshKey={refreshKey} />} />
         <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />

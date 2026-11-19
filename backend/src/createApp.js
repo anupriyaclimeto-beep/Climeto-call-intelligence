@@ -1,6 +1,8 @@
 import cors from 'cors';
 import express from 'express';
 import {
+  createExecutive,
+  deleteExecutive,
   getCallById,
   getDashboardData,
   getLatestWebhookEvent,
@@ -8,6 +10,7 @@ import {
   listActivities,
   listCalls,
   listCampaignFeed,
+  listExecutives,
   listLeads,
   listWebhookEvents,
 } from './db.js';
@@ -20,6 +23,16 @@ import {
   syncZohoEmails,
   receiveZohoEmailWebhook,
 } from './services/zohoEmailSync.js';
+import {
+  getWhatsAppFeedPayload,
+  receiveWhatsAppSync,
+  simulateWhatsAppMessage,
+} from './services/whatsappSync.js';
+import {
+  getWhatsAppSessionsStatus,
+  startExecutiveWhatsAppSession,
+  disconnectExecutiveWhatsAppSession,
+} from './services/whatsappBridge.js';
 
 function requireManyreachToken(req, res) {
   const expected = process.env.MANYREACH_WEBHOOK_SECRET || '';
@@ -51,7 +64,7 @@ function parseWebhookBody(raw) {
   }
 }
 
-export function createApp() {
+export function createApp({ sendEvent = () => {} } = {}) {
   const app = express();
   const allowedOrigins = (
     process.env.CORS_ORIGIN
@@ -224,6 +237,104 @@ export function createApp() {
       return res.json({ success: true, data: result });
     } catch (err) {
       return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get('/api/whatsapp/messages', (req, res) => {
+    const filters = {
+      search: String(req.query.search || '').trim(),
+      direction: String(req.query.direction || '').trim(),
+      executive: String(req.query.executive || '').trim(),
+      leadId: String(req.query.leadId || '').trim(),
+      phone: String(req.query.phone || '').trim(),
+      limit: Number(req.query.limit || 100),
+    };
+    return res.json({ success: true, data: getWhatsAppFeedPayload(filters) });
+  });
+
+  app.post('/api/whatsapp/sync', (req, res) => {
+    try {
+      const result = receiveWhatsAppSync(req.body);
+      sendEvent('whatsapp.received', {
+        id: result.message.id,
+        lead_id: result.message.lead_id,
+        client_name: result.message.client_name,
+        client_phone: result.message.client_phone,
+        executive_name: result.message.executive_name,
+        direction: result.message.direction,
+        message: result.message.message,
+        timestamp: result.message.timestamp,
+      });
+      return res.status(201).json({ success: true, data: result.message });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post('/api/dev/simulate-whatsapp', (req, res) => {
+    try {
+      const saved = simulateWhatsAppMessage(req.body || {});
+      sendEvent('whatsapp.received', {
+        id: saved.id,
+        lead_id: saved.lead_id,
+        client_name: saved.client_name,
+        client_phone: saved.client_phone,
+        executive_name: saved.executive_name,
+        direction: saved.direction,
+        message: saved.message,
+        timestamp: saved.timestamp,
+      });
+      return res.status(201).json({ success: true, data: saved });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get('/api/whatsapp/sessions', (_req, res) => {
+    return res.json({ success: true, data: getWhatsAppSessionsStatus() });
+  });
+
+  app.post('/api/whatsapp/sessions/:executiveId/start', async (req, res) => {
+    try {
+      const result = await startExecutiveWhatsAppSession(req.params.executiveId, { sendEvent });
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post('/api/whatsapp/sessions/:executiveId/disconnect', async (req, res) => {
+    try {
+      const result = await disconnectExecutiveWhatsAppSession(req.params.executiveId, { sendEvent });
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get('/api/executives', (_req, res) => {
+    return res.json({ success: true, data: listExecutives() });
+  });
+
+  app.post('/api/executives', (req, res) => {
+    try {
+      const created = createExecutive(req.body || {});
+      return res.status(201).json({ success: true, data: created });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  app.delete('/api/executives/:id', async (req, res) => {
+    try {
+      await disconnectExecutiveWhatsAppSession(req.params.id, { sendEvent }).catch(() => {});
+      const removed = deleteExecutive(req.params.id);
+      if (!removed) {
+        return res.status(404).json({ success: false, message: 'Executive not found' });
+      }
+      return res.json({ success: true, data: { deleted: true, id: req.params.id } });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
     }
   });
 
