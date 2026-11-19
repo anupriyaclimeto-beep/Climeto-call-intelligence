@@ -92,6 +92,9 @@ export function createSupabaseBridge({ upsertCall, notifyNewCall } = {}) {
     ssl: { rejectUnauthorized: false },
     max: 1,
   });
+  pool.on('error', (error) => {
+    console.error('Supabase bridge pool error:', error.message || error);
+  });
   const hasRealtimeCredentials = Boolean(projectUrl && serviceRoleKey);
   const supabase = hasRealtimeCredentials
     ? createClient(projectUrl, serviceRoleKey, {

@@ -5,6 +5,7 @@ import { initializeDb, createCompletedCall } from './db.js';
 import { createApp } from './createApp.js';
 import { createSupabaseBridge } from './services/supabaseBridge.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
+import { autoResumeWhatsAppSessions } from './services/whatsappBridge.js';
 import { syncZohoCrm } from './services/zohoSync.js';
 import { syncZohoEmails } from './services/zohoEmailSync.js';
 
@@ -17,9 +18,6 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 await initializeDb();
 
-const app = createApp();
-const port = Number(process.env.PORT || 4200);
-
 const eventClients = new Set();
 
 function sendEvent(type, payload) {
@@ -28,6 +26,9 @@ function sendEvent(type, payload) {
     client.write(message);
   }
 }
+
+const app = createApp({ sendEvent });
+const port = Number(process.env.PORT || 4200);
 
 const supabaseBridge = createSupabaseBridge({
   upsertCall(payload) {
@@ -103,6 +104,11 @@ await supabaseBridge.start();
 
 app.listen(port, () => {
   console.log(`Workspace API running on http://localhost:${port}`);
+
+  // Auto-resume any authenticated WhatsApp Multi-Device sessions
+  autoResumeWhatsAppSessions({ sendEvent }).catch((err) => {
+    console.warn('[WhatsApp Bridge] Session resume notice:', err.message);
+  });
 
   const syncEnabled = String(process.env.MANYREACH_SYNC_ENABLED || 'false').toLowerCase() === 'true';
   const apiKey = process.env.MANYREACH_API_KEY || '';
