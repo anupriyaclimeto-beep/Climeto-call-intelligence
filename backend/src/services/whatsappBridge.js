@@ -45,7 +45,7 @@ function extractMessageText(message) {
  * Cleans WhatsApp JID into international phone number format
  */
 function jidToPhoneNumber(jid = '') {
-  const num = String(jid).split('@')[0] || '';
+  const num = (String(jid).split('@')[0] || '').split(':')[0] || '';
   const clean = num.replace(/\D/g, '');
   if (!clean) return '';
   return clean.startsWith('91') && clean.length === 12 ? `+${clean}` : `+${clean}`;
@@ -62,19 +62,19 @@ export function getWhatsAppSessionsStatus() {
     ORDER BY u.rowid ASC
   `);
 
-  return executives.map((exec) => {
+  const byId = new Map();
+
+  for (const exec of executives) {
     const session = activeSessions.get(exec.id) || {
       status: 'disconnected',
       phone: null,
       qr: null,
       updatedAt: null,
     };
-
-    // Check if session credentials exist on disk
     const credsPath = path.join(SESSIONS_DIR, exec.id, 'creds.json');
     const hasSavedAuth = fs.existsSync(credsPath);
 
-    return {
+    byId.set(exec.id, {
       executiveId: exec.id,
       executiveName: exec.name,
       executiveEmail: exec.email,
@@ -83,8 +83,55 @@ export function getWhatsAppSessionsStatus() {
       qr: session.qr,
       hasSavedAuth,
       updatedAt: session.updatedAt,
-    };
-  });
+    });
+  }
+
+  // Also include any active in-memory sessions not present in `users` table
+  for (const [execId, session] of activeSessions.entries()) {
+    if (byId.has(execId)) continue;
+    const credsPath = path.join(SESSIONS_DIR, execId, 'creds.json');
+    byId.set(execId, {
+      executiveId: execId,
+      executiveName: session.phone || session.executiveName || execId,
+      executiveEmail: '',
+      status: session.status,
+      phone: session.phone || null,
+      qr: session.qr,
+      hasSavedAuth: fs.existsSync(credsPath),
+      updatedAt: session.updatedAt,
+    });
+  }
+
+  // Also include any saved session folders on disk not yet in `byId`
+  if (fs.existsSync(SESSIONS_DIR)) {
+    try {
+      const dirs = fs.readdirSync(SESSIONS_DIR);
+      for (const execId of dirs) {
+        if (byId.has(execId)) continue;
+        const credsPath = path.join(SESSIONS_DIR, execId, 'creds.json');
+        if (!fs.existsSync(credsPath)) continue;
+        let savedPhone = null;
+        let savedName = '';
+        try {
+          const parsed = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+          savedPhone = jidToPhoneNumber(parsed?.me?.id || '') || null;
+          savedName = String(parsed?.me?.name || '').trim();
+        } catch {}
+        byId.set(execId, {
+          executiveId: execId,
+          executiveName: savedPhone || savedName || execId,
+          executiveEmail: '',
+          status: 'disconnected',
+          phone: savedPhone,
+          qr: null,
+          hasSavedAuth: true,
+          updatedAt: null,
+        });
+      }
+    } catch {}
+  }
+
+  return Array.from(byId.values());
 }
 
 /**
@@ -92,22 +139,35 @@ export function getWhatsAppSessionsStatus() {
  */
 export async function startExecutiveWhatsAppSession(executiveId, { sendEvent = () => {} } = {}) {
   const user = get('SELECT id, name, email FROM users WHERE id = ?', [executiveId]);
-  const executiveName = user?.name || 'Ambuj Pathak';
+  const device = get('SELECT employee_phone FROM devices WHERE user_id = ? LIMIT 1', [executiveId]);
+  const sessionPath = path.join(SESSIONS_DIR, executiveId);
+  const credsPath = path.join(sessionPath, 'creds.json');
+
+  let savedWaPhone = '';
+  let savedWaName = '';
+  if (fs.existsSync(credsPath)) {
+    try {
+      const parsedCreds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+      savedWaPhone = jidToPhoneNumber(parsedCreds?.me?.id || '');
+      savedWaName = String(parsedCreds?.me?.name || '').trim();
+    } catch {}
+  }
+
+  const workPhone = savedWaPhone || device?.employee_phone || '';
+  let executiveName = workPhone || user?.name || savedWaName || executiveId || 'Sales Executive';
 
   // Return existing active session if already connected or waiting for QR
   const current = activeSessions.get(executiveId);
   if (current && (current.status === 'connected' || current.status === 'qr_ready')) {
     return {
       executiveId,
-      executiveName,
+      executiveName: current.phone || current.executiveName || executiveName,
       status: current.status,
       qr: current.qr,
       phone: current.phone,
     };
   }
 
-  const sessionPath = path.join(SESSIONS_DIR, executiveId);
-  const credsPath = path.join(sessionPath, 'creds.json');
   if (fs.existsSync(credsPath)) {
     try {
       const raw = fs.readFileSync(credsPath, 'utf8').trim();
@@ -129,7 +189,7 @@ export async function startExecutiveWhatsAppSession(executiveId, { sendEvent = (
     executiveName,
     status: 'connecting',
     qr: null,
-    phone: null,
+    phone: workPhone || null,
     socket: null,
     updatedAt: new Date().toISOString(),
   };
@@ -240,13 +300,42 @@ export async function startExecutiveWhatsAppSession(executiveId, { sendEvent = (
       if (!msg?.message || msg.key?.remoteJid === 'status@broadcast') return null;
 
       let remoteJid = msg.key?.remoteJid || '';
-      if (remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast')) return null; // Ignore groups & broadcasts
-      if (remoteJid.endsWith('@lid') && msg.key?.remoteJidAlt) {
-        remoteJid = msg.key.remoteJidAlt;
+      if (
+        remoteJid.endsWith('@g.us') ||
+        remoteJid.endsWith('@broadcast') ||
+        remoteJid.endsWith('@newsletter')
+      ) {
+        return null; // Ignore groups, status broadcasts, and WhatsApp Channels/Newsletters
+      }
+      if (remoteJid.endsWith('@lid')) {
+        if (msg.key?.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
+          remoteJid = msg.key.remoteJidAlt;
+        } else {
+          // Resolve LID using Baileys reverse mapping file (lid-mapping-<lid>_reverse.json)
+          const lidDigits = (remoteJid.split('@')[0] || '').split(':')[0].replace(/\D/g, '');
+          const reversePath = lidDigits ? path.join(sessionPath, `lid-mapping-${lidDigits}_reverse.json`) : '';
+          let mappedPhone = '';
+          if (reversePath && fs.existsSync(reversePath)) {
+            try {
+              const raw = JSON.parse(fs.readFileSync(reversePath, 'utf8'));
+              mappedPhone = String(raw || '').replace(/\D/g, '');
+            } catch {}
+          }
+          if (mappedPhone && mappedPhone.length >= 10 && mappedPhone.length <= 15) {
+            remoteJid = `${mappedPhone}@s.whatsapp.net`;
+          } else {
+            return null; // Ignore unresolvable internal WhatsApp LIDs without a phone number
+          }
+        }
+      }
+      if (!remoteJid.endsWith('@s.whatsapp.net')) {
+        return null;
       }
 
       const clientPhone = jidToPhoneNumber(remoteJid);
-      if (!clientPhone) return null;
+      const rawDigits = clientPhone.replace(/\D/g, '');
+      // Valid international E.164 phone numbers are 10 to 15 digits (blocks 18-digit channel IDs like 120363...)
+      if (!clientPhone || rawDigits.length < 10 || rawDigits.length > 15) return null;
 
       // Match against existing leads in Climeto CRM
       const digits = clientPhone.replace(/\D/g, '').slice(-10);
@@ -273,12 +362,15 @@ export async function startExecutiveWhatsAppSession(executiveId, { sendEvent = (
       const pushName = !isFromMe && msg.pushName ? String(msg.pushName).trim() : '';
       const contactName = contactNameMap.get(remoteJid) || contactNameMap.get(msg.key?.remoteJid) || '';
 
+      const latestUser = get('SELECT name FROM users WHERE id = ?', [executiveId]);
+      const resolvedExecName = latestUser?.name || sessionState.phone || executiveName;
+
       return upsertWhatsAppMessage({
         externalId,
         deviceId: `server-bridge-${executiveId}`,
         ownerId: executiveId,
         leadId: matchedLead?.id || null,
-        executiveName,
+        executiveName: resolvedExecName,
         clientName: matchedLead?.client_name || contactName || pushName || clientPhone,
         clientPhone,
         direction,

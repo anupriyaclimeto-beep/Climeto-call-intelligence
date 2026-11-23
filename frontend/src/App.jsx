@@ -11,8 +11,10 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Sparkles,
   Users,
 } from 'lucide-react';
+import PitchTrainingPage from './PitchTrainingPage.jsx';
 import {
   BrowserRouter,
   Link,
@@ -31,6 +33,7 @@ const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/calls', label: 'Calls', icon: Phone },
   { to: '/platforms/whatsapp', label: 'WhatsApp', icon: MessageCircleMore },
+  { to: '/pitch-training', label: 'Pitch Training', icon: Sparkles },
   { to: '/platforms/email', label: 'Email', icon: Mail },
   { to: '/platforms/campaign', label: 'Campaigns', icon: Megaphone },
   { to: '/zoho-crm', label: 'Zoho CRM', icon: Briefcase },
@@ -403,7 +406,7 @@ function CallsPage({ refreshKey }) {
       <div className="section-head">
         <div>
           <h3>Completed Calls</h3>
-          <p>Jese hi call khatam ho, yeh list auto-refresh hokar nayi entry dikha degi.</p>
+          <p>As soon as a call ends, this list automatically refreshes to display the new entry.</p>
         </div>
       </div>
 
@@ -2508,6 +2511,7 @@ function WorkspaceRoutes() {
         <Route path="/zoho-accounts" element={<ZohoAccountsPage refreshKey={refreshKey} />} />
         <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />
         <Route path="/leads/:leadId" element={<LeadDetailPage refreshKey={refreshKey} />} />
+        <Route path="/pitch-training" element={<PitchTrainingPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

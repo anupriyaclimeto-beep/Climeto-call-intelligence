@@ -1,13 +1,17 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initializeDb, createCompletedCall } from './db.js';
+import { initializeDb, createCompletedCall, syncExecutiveDirectoryFromCalling } from './db.js';
 import { createApp } from './createApp.js';
 import { createSupabaseBridge } from './services/supabaseBridge.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
 import { autoResumeWhatsAppSessions } from './services/whatsappBridge.js';
 import { syncZohoCrm } from './services/zohoSync.js';
 import { syncZohoEmails } from './services/zohoEmailSync.js';
+import {
+  enqueueLiveCallEvaluation,
+  setTrainingEventEmitter,
+} from './services/pitchAnalyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,12 +31,14 @@ function sendEvent(type, payload) {
   }
 }
 
-const app = createApp({ sendEvent });
-const port = Number(process.env.PORT || 4200);
+setTrainingEventEmitter(sendEvent);
 
 const supabaseBridge = createSupabaseBridge({
   upsertCall(payload) {
     return createCompletedCall(payload);
+  },
+  syncCallingUsers(users) {
+    return syncExecutiveDirectoryFromCalling(users);
   },
   notifyNewCall(call) {
     sendEvent('call.completed', {
@@ -42,8 +48,12 @@ const supabaseBridge = createSupabaseBridge({
       executive_name: call.executive_name,
       created_at: call.created_at,
     });
+    enqueueLiveCallEvaluation(call.id);
   },
 });
+
+const app = createApp({ sendEvent, supabaseBridge });
+const port = Number(process.env.PORT || 4200);
 
 app.get('/api/events', (req, res) => {
   res.writeHead(200, {
@@ -68,6 +78,7 @@ app.post('/api/calls/complete', (req, res) => {
     executive_name: call.executive_name,
     created_at: call.created_at,
   });
+  enqueueLiveCallEvaluation(call.id);
   return res.status(201).json({ success: true, data: call });
 });
 
@@ -96,6 +107,7 @@ app.post('/api/dev/simulate-call', (_req, res) => {
     executive_name: call.executive_name,
     created_at: call.created_at,
   });
+  enqueueLiveCallEvaluation(call.id);
 
   return res.status(201).json({ success: true, data: call });
 });

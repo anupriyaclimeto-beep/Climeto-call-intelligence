@@ -68,12 +68,17 @@ function mapSupabaseRowToWorkspaceCall(row) {
   };
 }
 
-export function createSupabaseBridge({ upsertCall, notifyNewCall } = {}) {
+export function createSupabaseBridge({ upsertCall, notifyNewCall, syncCallingUsers } = {}) {
   const enabled = process.env.SUPABASE_BRIDGE_ENABLED === 'true';
   const connectionString =
     process.env.SUPABASE_BRIDGE_DATABASE_URL || process.env.DATABASE_URL || '';
   const pollMs = Number(process.env.SUPABASE_BRIDGE_POLL_MS || 1000);
-  const limit = Number(process.env.SUPABASE_BRIDGE_LIMIT || 15);
+  const pollLimit = Math.max(Number(process.env.SUPABASE_BRIDGE_LIMIT || 20), 10);
+  const bootstrapLimit = Math.max(
+    Number(process.env.SUPABASE_BRIDGE_BOOTSTRAP_LIMIT || 150),
+    100,
+    pollLimit,
+  );
   const projectUrl = process.env.SUPABASE_PROJECT_URL || '';
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
@@ -82,6 +87,9 @@ export function createSupabaseBridge({ upsertCall, notifyNewCall } = {}) {
       enabled: false,
       async start() {
         return false;
+      },
+      async backfillOlderCalls() {
+        return { synced: 0, fetched: 0, enabled: false };
       },
       async stop() {},
     };
@@ -128,35 +136,42 @@ export function createSupabaseBridge({ upsertCall, notifyNewCall } = {}) {
     return call;
   }
 
+  async function fetchCompletedCalls(fetchLimit) {
+    const safeLimit = Math.min(Math.max(Number(fetchLimit || pollLimit), 1), 1000);
+    const { rows } = await pool.query(
+      `SELECT
+        id,
+        executive_id,
+        device_id,
+        employee_name,
+        client_name,
+        client_phone,
+        duration_seconds,
+        status,
+        summary,
+        transcript,
+        action_items,
+        created_at,
+        updated_at
+       FROM calls
+       WHERE status = 'completed'
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [safeLimit],
+    );
+    return rows;
+  }
+
   async function pollOnce() {
     if (polling) return;
     polling = true;
 
     try {
-      const { rows } = await pool.query(
-        `SELECT
-          id,
-          executive_id,
-          device_id,
-          employee_name,
-          client_name,
-          client_phone,
-          duration_seconds,
-          status,
-          summary,
-          transcript,
-          action_items,
-          created_at,
-          updated_at
-         FROM calls
-         WHERE status = 'completed'
-         ORDER BY created_at DESC
-         LIMIT $1`,
-        [limit],
-      );
+      const fetchLimit = bootstrapped ? pollLimit : bootstrapLimit;
+      const rows = await fetchCompletedCalls(fetchLimit);
 
       if (!bootstrapped) {
-        console.log(`Supabase bridge fetched ${rows.length} completed calls on bootstrap.`);
+        console.log(`Supabase bridge fetched ${rows.length} completed calls on bootstrap (limit ${fetchLimit}).`);
       }
 
       const orderedRows = [...rows].sort(
@@ -176,6 +191,24 @@ export function createSupabaseBridge({ upsertCall, notifyNewCall } = {}) {
       console.error('Supabase bridge poll failed:', error.message || error);
     } finally {
       polling = false;
+    }
+  }
+
+  async function backfillOlderCalls(fetchLimit = bootstrapLimit) {
+    try {
+      const rows = await fetchCompletedCalls(fetchLimit);
+      const orderedRows = [...rows].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      );
+      let synced = 0;
+      for (const row of orderedRows) {
+        const res = await syncRow(row, { notifyIfNew: false });
+        if (res) synced += 1;
+      }
+      return { enabled: true, fetched: rows.length, synced };
+    } catch (error) {
+      console.error('Supabase bridge backfill failed:', error.message || error);
+      return { enabled: true, fetched: 0, synced: 0, error: error.message || String(error) };
     }
   }
 
@@ -211,7 +244,19 @@ export function createSupabaseBridge({ upsertCall, notifyNewCall } = {}) {
 
   return {
     enabled: true,
+    backfillOlderCalls,
     async start() {
+      try {
+        const { rows: userRows } = await pool.query(
+          "SELECT id, name, phone FROM users WHERE phone IS NOT NULL AND phone != ''",
+        );
+        if (userRows?.length) {
+          syncCallingUsers?.(userRows);
+        }
+      } catch (err) {
+        console.warn('Supabase bridge user directory sync notice:', err.message || err);
+      }
+
       await pollOnce();
 
       if (hasRealtimeCredentials) {

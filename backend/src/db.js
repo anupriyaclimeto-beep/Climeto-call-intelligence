@@ -143,6 +143,9 @@ export async function initializeDb() {
   seedZohoAccountsIfEmpty();
   seedZohoEmailsIfEmpty();
   seedWhatsAppMessagesIfEmpty();
+  purgeInvalidWhatsAppChannels();
+  repairExistingWhatsAppLids();
+  seedPlaybookIfEmpty();
   persistDb();
 }
 
@@ -1242,7 +1245,7 @@ export function upsertWhatsAppMessage(data) {
   const externalId = String(data.externalId || data.external_id || data.id || '').trim();
   const id = `wa-${externalId || randomUUID().slice(0, 8)}`;
   const deviceId = String(data.deviceId || data.device_id || 'android-device').trim();
-  const executiveName = String(data.executiveName || data.executive_name || 'Ambuj Pathak').trim();
+  const executiveName = String(data.executiveName || data.executive_name || 'Sales Executive').trim();
   const rawPhone = String(data.clientPhone || data.client_phone || '').trim();
   const clientPhone = sanitizePhone(rawPhone);
   let clientName = String(data.clientName || data.client_name || '').trim();
@@ -1385,8 +1388,99 @@ export function upsertWhatsAppMessage(data) {
   return get('SELECT * FROM whatsapp_messages WHERE id = ?', [existing ? existing.id : id]);
 }
 
+export function purgeInvalidWhatsAppChannels() {
+  try {
+    const rows = all('SELECT id, lead_id, client_phone FROM whatsapp_messages');
+    let removed = 0;
+    for (const r of rows) {
+      const digits = String(r.client_phone || '').replace(/\D/g, '');
+      const isChannel = digits.length > 15 || digits.startsWith('120363');
+      if (!isChannel) continue;
+      run('DELETE FROM whatsapp_messages WHERE id = ?', [r.id]);
+      run('DELETE FROM activities WHERE id = ?', [`act-${r.id}`]);
+      if (r.lead_id && String(r.lead_id).startsWith('lead-wa-')) {
+        run('DELETE FROM leads WHERE id = ?', [r.lead_id]);
+      }
+      removed += 1;
+    }
+    if (removed > 0) {
+      console.log(`[WhatsApp DB] Auto-purged ${removed} channel/newsletter rows on boot.`);
+      persistDb();
+    }
+    return removed;
+  } catch (err) {
+    console.warn('[WhatsApp DB] Notice in purgeInvalidWhatsAppChannels:', err.message);
+    return 0;
+  }
+}
+
+export function repairExistingWhatsAppLids() {
+  try {
+    const sessionsDir = path.resolve(backendRoot, './data/whatsapp-sessions');
+    if (!fs.existsSync(sessionsDir)) return 0;
+
+    // Build global LID -> +Phone lookup map from all Baileys session folders
+    const lidMap = new Map();
+    for (const dirName of fs.readdirSync(sessionsDir)) {
+      const fullDir = path.join(sessionsDir, dirName);
+      if (!fs.statSync(fullDir).isDirectory()) continue;
+      for (const fileName of fs.readdirSync(fullDir)) {
+        const match = fileName.match(/^lid-mapping-(\d+)_reverse\.json$/);
+        if (!match) continue;
+        const lidDigits = match[1];
+        if (lidMap.has(lidDigits)) continue;
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(fullDir, fileName), 'utf8'));
+          const phoneDigits = String(raw || '').replace(/\D/g, '');
+          if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
+            lidMap.set(lidDigits, `+${phoneDigits}`);
+          }
+        } catch {}
+      }
+    }
+
+    if (lidMap.size === 0) return 0;
+
+    let repaired = 0;
+    const msgs = all('SELECT id, lead_id, client_name, client_phone FROM whatsapp_messages');
+    for (const m of msgs) {
+      const digits = String(m.client_phone || '').replace(/\D/g, '');
+      const realPhone = lidMap.get(digits);
+      if (!realPhone || realPhone === m.client_phone) continue;
+
+      const updatedName = m.client_name === m.client_phone ? realPhone : m.client_name;
+      run('UPDATE whatsapp_messages SET client_phone = ?, client_name = ? WHERE id = ?', [
+        realPhone,
+        updatedName,
+        m.id,
+      ]);
+      if (m.lead_id) {
+        const leadRow = get('SELECT id, client_name, client_phone FROM leads WHERE id = ?', [m.lead_id]);
+        if (leadRow) {
+          const newLeadName = leadRow.client_name === leadRow.client_phone ? realPhone : leadRow.client_name;
+          run('UPDATE leads SET client_phone = ?, client_name = ? WHERE id = ?', [
+            realPhone,
+            newLeadName,
+            leadRow.id,
+          ]);
+        }
+      }
+      repaired += 1;
+    }
+
+    if (repaired > 0) {
+      console.log(`[WhatsApp DB] Repaired ${repaired} LID phone numbers to real +91/E.164 phone numbers.`);
+      persistDb();
+    }
+    return repaired;
+  } catch (err) {
+    console.warn('[WhatsApp DB] Notice in repairExistingWhatsAppLids:', err.message);
+    return 0;
+  }
+}
+
 export function listWhatsAppMessages(filters = {}) {
-  const conditions = ['1=1'];
+  const conditions = ["length(replace(m.client_phone, '+', '')) <= 15", "m.client_phone NOT LIKE '+120363%'"];
   const params = [];
 
   if (filters.search) {
@@ -1600,5 +1694,800 @@ export function deleteExecutive(id) {
   persistDb();
   return true;
 }
+
+/**
+ * Syncs executive names from Supabase Calling directory (`users` table)
+ * onto matching local executives (by last 10 digits of work SIM phone),
+ * and aligns existing WhatsApp messages + pitch evaluations to those exact Calling names.
+ */
+export function syncExecutiveDirectoryFromCalling(callingUsers = []) {
+  if (!Array.isArray(callingUsers) || callingUsers.length === 0) return { updated: 0 };
+
+  let updated = 0;
+  for (const cu of callingUsers) {
+    const callingName = String(cu.name || '').trim();
+    const rawDigits = String(cu.phone || '').replace(/\D/g, '');
+    const last10 = rawDigits.length >= 10 ? rawDigits.slice(-10) : '';
+    if (!callingName || !last10) continue;
+
+    // 1. Update matching local devices & users by phone number
+    const matchingDevices = all('SELECT id, user_id, employee_name FROM devices WHERE employee_phone LIKE ?', [
+      `%${last10}`,
+    ]);
+    for (const dev of matchingDevices) {
+      const oldName = dev.employee_name || '';
+      if (dev.user_id) {
+        const u = get('SELECT id, name FROM users WHERE id = ?', [dev.user_id]);
+        if (u && u.name !== callingName) {
+          run('UPDATE users SET name = ? WHERE id = ?', [callingName, u.id]);
+          updated += 1;
+        }
+        run('UPDATE whatsapp_messages SET executive_name = ? WHERE device_id = ?', [
+          callingName,
+          `server-bridge-${dev.user_id}`,
+        ]);
+      }
+      if (oldName !== callingName) {
+        run('UPDATE devices SET employee_name = ? WHERE id = ?', [callingName, dev.id]);
+        if (oldName) {
+          run('UPDATE whatsapp_messages SET executive_name = ? WHERE LOWER(executive_name) = ?', [
+            callingName,
+            oldName.toLowerCase(),
+          ]);
+          run('UPDATE pitch_evaluations SET executive_name = ? WHERE LOWER(executive_name) = ?', [
+            callingName,
+            oldName.toLowerCase(),
+          ]);
+        }
+      }
+    }
+
+    // 2. Also update any whatsapp_messages or pitch_evaluations stored with the raw phone number
+    run('UPDATE whatsapp_messages SET executive_name = ? WHERE executive_name LIKE ?', [
+      callingName,
+      `%${last10}`,
+    ]);
+    run('UPDATE pitch_evaluations SET executive_name = ? WHERE executive_name LIKE ?', [
+      callingName,
+      `%${last10}`,
+    ]);
+  }
+
+  if (updated > 0) {
+    console.log(`[Executive Sync] Aligned ${updated} local executive name(s) with Calling directory.`);
+  }
+  persistDb();
+  return { updated };
+}
+
+// ============================================================
+// Pitch Training: Smart Playbook, Evaluations & AI Roleplay
+// ============================================================
+
+function safeJsonParse(raw, fallback) {
+  if (!raw) return fallback;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+export function seedPlaybookIfEmpty() {
+  try {
+    const row = get('SELECT COUNT(*) AS count FROM playbook_rules');
+    if ((row?.count ?? 0) > 0) return;
+
+    const now = new Date().toISOString();
+    const starterRules = [
+      {
+        id: 'pb-disc-1',
+        category: 'discovery',
+        title: 'Confirm PIBO Entity Type',
+        client_cue: 'Early discovery on call or WhatsApp',
+        ideal_response: 'Sir, aapki company CPCB portal par Producer, Importer, ya Brand Owner (PIBO) ke roop me registered hai?',
+        priority: 1,
+      },
+      {
+        id: 'pb-disc-2',
+        category: 'discovery',
+        title: 'Ask Plastic Waste Category (I / II / III)',
+        client_cue: 'Before sharing any commercial quotation',
+        ideal_response: 'Aapka plastic packaging kis category me aata hai — Category I (Rigid), Category II (Flexible), ya Category III (Multi-layered/MLP)?',
+        priority: 1,
+      },
+      {
+        id: 'pb-disc-3',
+        category: 'discovery',
+        title: 'Ask Annual / Monthly Volume (MT)',
+        client_cue: 'Before quoting per-MT credit rate',
+        ideal_response: 'Aapka annual EPR target approx kitne Metric Tons (MT) ka hai? Exact volume ke hisaab se best commercial slab share kar paunga.',
+        priority: 1,
+      },
+      {
+        id: 'pb-disc-4',
+        category: 'discovery',
+        title: 'Check Current Vendor & Filing Timeline',
+        client_cue: 'Qualifying urgency and competition',
+        ideal_response: 'Abhi aap EPR credits aur filing internally handle kar rahe hain ya kisi existing vendor ke through? Is quarter ki filing kab tak target kar rahe hain?',
+        priority: 2,
+      },
+      {
+        id: 'pb-obj-1',
+        category: 'objection',
+        title: 'Price Too High / Competitor Is Cheaper',
+        client_cue: '"Rate zyada hai" / "Doosra vendor sasta de raha hai"',
+        ideal_response: 'Sir, saste credits me aksar CPCB audit ya invalid recycler certificate ka risk hota hai. Climeto aapko 100% CPCB-verified credits aur end-to-end filing support deta hai — aapka exact MT volume batayein to main best slab share karta hoon.',
+        priority: 1,
+      },
+      {
+        id: 'pb-obj-2',
+        category: 'objection',
+        title: 'Client Is Busy / Call Later',
+        client_cue: '"Abhi time nahi hai" / "Baad me call karo"',
+        ideal_response: 'Bilkul sir, bas 20 second lunga — aapka annual EPR target approx kitne MT ka hai? Main WhatsApp par 3-point summary bhej deta hoon, kal subah 11 baje connect kar lein?',
+        priority: 1,
+      },
+      {
+        id: 'pb-obj-3',
+        category: 'objection',
+        title: 'Send Details on WhatsApp / Email',
+        client_cue: '"Details WhatsApp / mail par bhej do"',
+        ideal_response: 'Zaroor sir, main abhi brochure aur rough slab WhatsApp kar raha hoon. Accurate quotation ke liye bas apni waste category aur approx MT confirm kar dijiye — kal 11:30 AM par 2-minute review call rakhein?',
+        priority: 1,
+      },
+      {
+        id: 'pb-obj-4',
+        category: 'objection',
+        title: 'Already Working With Another Vendor',
+        client_cue: '"Hamara existing vendor already hai"',
+        ideal_response: 'Great sir, agar current vendor acha kaam kar raha hai to badhiya hai. Bahut se PIBO clients humein secondary partner rakhte hain taaki deadline par credit shortage ya rate hike na ho — ek comparison quote bhej doon?',
+        priority: 2,
+      },
+      {
+        id: 'pb-wa-1',
+        category: 'whatsapp_template',
+        title: 'Post-Call Quotation & Brochure Follow-Up',
+        client_cue: 'Immediately after client asks for quotation on call',
+        ideal_response: 'Hello [Client Name] ji, thank you for speaking with Climeto. Sharing our EPR Plastic Credits brochure & CPCB compliance overview. Please share your Category (I/II/III) & approx annual MT target so I can send the best commercial quote today.',
+        priority: 1,
+      },
+      {
+        id: 'pb-rf-1',
+        category: 'red_flag',
+        title: 'Quoting Blindly Without Volume or Category',
+        client_cue: 'Executive quotes a flat rate without asking Category I/II/III or MT volume',
+        ideal_response: 'Never quote blind flat rates or unapproved discounts before confirming waste category and annual MT volume.',
+        priority: 1,
+      },
+      {
+        id: 'pb-rf-2',
+        category: 'red_flag',
+        title: 'Broken Follow-Up Promise',
+        client_cue: 'Executive promises quotation/brochure on call but does not send WhatsApp/Email same day',
+        ideal_response: 'Every document or quotation promised on a call must be sent on WhatsApp/Email within the committed window.',
+        priority: 1,
+      },
+    ];
+
+    for (const rule of starterRules) {
+      run(
+        `INSERT INTO playbook_rules
+         (id, category, title, client_cue, ideal_response, priority, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        [rule.id, rule.category, rule.title, rule.client_cue, rule.ideal_response, rule.priority, now, now],
+      );
+    }
+    persistDb();
+  } catch (err) {
+    console.warn('[Playbook DB] Notice in seedPlaybookIfEmpty:', err.message);
+  }
+}
+
+export function listPlaybookRules({ category = '', activeOnly = false } = {}) {
+  const conditions = ['1=1'];
+  const params = [];
+  if (category) {
+    conditions.push('category = ?');
+    params.push(category);
+  }
+  if (activeOnly) {
+    conditions.push('is_active = 1');
+  }
+  return all(
+    `SELECT * FROM playbook_rules WHERE ${conditions.join(' AND ')} ORDER BY priority ASC, created_at ASC`,
+    params,
+  );
+}
+
+export function upsertPlaybookRule(data = {}) {
+  const category = String(data.category || 'objection').trim().toLowerCase();
+  const title = String(data.title || '').trim();
+  const clientCue = String(data.client_cue || data.clientCue || '').trim();
+  const idealResponse = String(data.ideal_response || data.idealResponse || '').trim();
+  const priority = Number(data.priority || 1);
+  const isActive = data.is_active === false || data.is_active === 0 ? 0 : 1;
+
+  if (!title) throw new Error('Playbook rule title is required');
+  if (!idealResponse) throw new Error('Ideal response / guidance is required');
+
+  const now = new Date().toISOString();
+  const existingId = data.id ? get('SELECT id FROM playbook_rules WHERE id = ?', [data.id]) : null;
+
+  if (existingId) {
+    run(
+      `UPDATE playbook_rules
+       SET category = ?, title = ?, client_cue = ?, ideal_response = ?, priority = ?, is_active = ?, updated_at = ?
+       WHERE id = ?`,
+      [category, title, clientCue, idealResponse, priority, isActive, now, existingId.id],
+    );
+    persistDb();
+    return get('SELECT * FROM playbook_rules WHERE id = ?', [existingId.id]);
+  }
+
+  const id = `pb-${category.slice(0, 4)}-${randomUUID().slice(0, 6)}`;
+  run(
+    `INSERT INTO playbook_rules
+     (id, category, title, client_cue, ideal_response, priority, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, category, title, clientCue, idealResponse, priority, isActive, now, now],
+  );
+  persistDb();
+  return get('SELECT * FROM playbook_rules WHERE id = ?', [id]);
+}
+
+export function deletePlaybookRule(id) {
+  const existing = get('SELECT id FROM playbook_rules WHERE id = ?', [id]);
+  if (!existing) return false;
+  run('DELETE FROM playbook_rules WHERE id = ?', [id]);
+  persistDb();
+  return true;
+}
+
+function parsePitchEvaluation(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    scores: safeJsonParse(row.scores_json, {}),
+    strengths: safeJsonParse(row.strengths_json, []),
+    gaps: safeJsonParse(row.gaps_json, []),
+    missed_questions: safeJsonParse(row.missed_questions_json, []),
+    red_flags: safeJsonParse(row.red_flags_json, []),
+  };
+}
+
+export function upsertPitchEvaluation(data = {}) {
+  const targetType = String(data.target_type || data.targetType || 'call').trim();
+  const targetId = String(data.target_id || data.targetId || '').trim();
+  if (!targetId) throw new Error('target_id is required');
+
+  const now = new Date().toISOString();
+  const existing = get(
+    'SELECT id, manager_status, manager_score, manager_note, manager_try_line FROM pitch_evaluations WHERE target_type = ? AND target_id = ?',
+    [targetType, targetId],
+  );
+
+  const scoresJson = JSON.stringify(data.scores || {});
+  const strengthsJson = JSON.stringify(data.strengths || []);
+  const gapsJson = JSON.stringify(data.gaps || []);
+  const missedJson = JSON.stringify(data.missed_questions || data.missedQuestions || []);
+  const redFlagsJson = JSON.stringify(data.red_flags || data.redFlags || []);
+  const overallScore = Number(data.overall_score ?? data.overallScore ?? 0);
+
+  if (existing) {
+    run(
+      `UPDATE pitch_evaluations
+       SET lead_id = COALESCE(?, lead_id),
+           executive_name = ?,
+           client_name = ?,
+           channel_summary = ?,
+           overall_score = ?,
+           scores_json = ?,
+           strengths_json = ?,
+           gaps_json = ?,
+           missed_questions_json = ?,
+           red_flags_json = ?,
+           try_line = ?,
+           ai_summary = ?,
+           model_used = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        data.lead_id || data.leadId || null,
+        String(data.executive_name || data.executiveName || 'Sales Executive'),
+        String(data.client_name || data.clientName || 'Client'),
+        String(data.channel_summary || data.channelSummary || ''),
+        overallScore,
+        scoresJson,
+        strengthsJson,
+        gapsJson,
+        missedJson,
+        redFlagsJson,
+        String(data.try_line || data.tryLine || ''),
+        String(data.ai_summary || data.aiSummary || ''),
+        String(data.model_used || data.modelUsed || 'gemini'),
+        now,
+        existing.id,
+      ],
+    );
+    persistDb();
+    return parsePitchEvaluation(get('SELECT * FROM pitch_evaluations WHERE id = ?', [existing.id]));
+  }
+
+  const id = `pe-${randomUUID().slice(0, 8)}`;
+  run(
+    `INSERT INTO pitch_evaluations
+     (id, target_type, target_id, lead_id, executive_name, client_name, channel_summary, overall_score,
+      scores_json, strengths_json, gaps_json, missed_questions_json, red_flags_json,
+      try_line, ai_summary, model_used, manager_status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    [
+      id,
+      targetType,
+      targetId,
+      data.lead_id || data.leadId || null,
+      String(data.executive_name || data.executiveName || 'Sales Executive'),
+      String(data.client_name || data.clientName || 'Client'),
+      String(data.channel_summary || data.channelSummary || ''),
+      overallScore,
+      scoresJson,
+      strengthsJson,
+      gapsJson,
+      missedJson,
+      redFlagsJson,
+      String(data.try_line || data.tryLine || ''),
+      String(data.ai_summary || data.aiSummary || ''),
+      String(data.model_used || data.modelUsed || 'gemini'),
+      now,
+      now,
+    ],
+  );
+  persistDb();
+  return parsePitchEvaluation(get('SELECT * FROM pitch_evaluations WHERE id = ?', [id]));
+}
+
+export function listPitchEvaluations({ executive = '', managerStatus = '', targetType = '', limit = 50 } = {}) {
+  const conditions = ['1=1'];
+  const params = [];
+  if (executive) {
+    conditions.push('executive_name LIKE ?');
+    params.push(`%${executive}%`);
+  }
+  if (managerStatus) {
+    conditions.push('manager_status = ?');
+    params.push(managerStatus);
+  }
+  if (targetType) {
+    conditions.push('target_type = ?');
+    params.push(targetType);
+  }
+  params.push(Number(limit) || 50);
+
+  return all(
+    `SELECT * FROM pitch_evaluations WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`,
+    params,
+  ).map(parsePitchEvaluation);
+}
+
+export function getPitchEvaluationById(id) {
+  return parsePitchEvaluation(get('SELECT * FROM pitch_evaluations WHERE id = ?', [id]));
+}
+
+export function updatePitchEvaluationFeedback(id, { managerStatus = 'approved', managerScore = null, managerNote = '', managerTryLine = '' } = {}) {
+  const existing = get('SELECT * FROM pitch_evaluations WHERE id = ?', [id]);
+  if (!existing) return null;
+
+  const now = new Date().toISOString();
+  run(
+    `UPDATE pitch_evaluations
+     SET manager_status = ?,
+         manager_score = COALESCE(?, manager_score),
+         manager_note = ?,
+         manager_try_line = ?,
+         updated_at = ?
+     WHERE id = ?`,
+    [
+      String(managerStatus || 'approved'),
+      managerScore != null && managerScore !== '' ? Number(managerScore) : null,
+      String(managerNote || ''),
+      String(managerTryLine || ''),
+      now,
+      id,
+    ],
+  );
+  persistDb();
+  return getPitchEvaluationById(id);
+}
+
+export function resolveUnifiedExecutive(identifier = '') {
+  const raw = String(identifier || '').trim();
+  if (!raw) {
+    return { canonicalName: 'Sales Executive', userId: null, email: '', phone: '' };
+  }
+
+  const execs = listExecutives();
+  const lower = raw.toLowerCase();
+  const digits = raw.replace(/\D/g, '');
+  const last10 = digits.length >= 10 ? digits.slice(-10) : '';
+
+  for (const ex of execs) {
+    const exName = String(ex.name || '').trim();
+    const exEmail = String(ex.email || '').trim().toLowerCase();
+    const exDigits = String(ex.phone || '').replace(/\D/g, '');
+    const exLast10 = exDigits.length >= 10 ? exDigits.slice(-10) : '';
+
+    if (
+      ex.id === raw ||
+      (exName && exName.toLowerCase() === lower) ||
+      (exEmail && exEmail === lower) ||
+      (last10 && exLast10 && last10 === exLast10)
+    ) {
+      return {
+        canonicalName: exName || raw,
+        userId: ex.id,
+        email: ex.email || '',
+        phone: ex.phone || '',
+      };
+    }
+  }
+
+  return {
+    canonicalName: raw,
+    userId: null,
+    email: raw.includes('@') ? lower : '',
+    phone: last10 ? raw : '',
+  };
+}
+
+function getExecutiveChannelCounts({ canonicalName, userId, email, phone }) {
+  const nameLike = `%${canonicalName}%`;
+  const digits10 = String(phone || '').replace(/\D/g, '').slice(-10);
+  const phoneLike = digits10.length === 10 ? `%${digits10}` : '';
+
+  const callRows = all(
+    'SELECT id, lead_id FROM calls WHERE executive_name LIKE ? OR (? != "" AND user_id = ?)',
+    [nameLike, userId || '', userId || ''],
+  );
+
+  const waRows = all(
+    `SELECT id, lead_id FROM whatsapp_messages
+     WHERE (executive_name LIKE ? OR (? != "" AND executive_name LIKE ?))
+       AND length(replace(client_phone, '+', '')) <= 15
+       AND client_phone NOT LIKE '+120363%'`,
+    [nameLike, phoneLike, phoneLike],
+  );
+
+  const emailRows = all(
+    'SELECT id, lead_id FROM zoho_emails WHERE executive_name LIKE ? OR (? != "" AND LOWER(executive_email) = ?)',
+    [nameLike, email || '', String(email || '').toLowerCase()],
+  );
+
+  const leadIds = new Set();
+  for (const r of [...callRows, ...waRows, ...emailRows]) {
+    if (r.lead_id) leadIds.add(r.lead_id);
+  }
+  if (userId) {
+    for (const l of all('SELECT id FROM leads WHERE owner_id = ?', [userId])) {
+      leadIds.add(l.id);
+    }
+  }
+
+  let campaignCount = 0;
+  if (leadIds.size > 0) {
+    const ids = Array.from(leadIds);
+    const placeholders = ids.map(() => '?').join(',');
+    const cRow = get(`SELECT COUNT(*) AS cnt FROM campaign_events WHERE lead_id IN (${placeholders})`, ids);
+    campaignCount = cRow?.cnt ?? 0;
+  }
+
+  const zohoAcctRow = get('SELECT COUNT(*) AS cnt FROM zoho_accounts WHERE owner_name LIKE ?', [nameLike]);
+
+  return {
+    calls: callRows.length,
+    whatsapp: waRows.length,
+    zoho_emails: emailRows.length,
+    campaigns: campaignCount,
+    leads: leadIds.size,
+    zoho_accounts: zohoAcctRow?.cnt ?? 0,
+  };
+}
+
+export function getCallTrainingCoverage() {
+  const totalCallsRow = get('SELECT COUNT(*) AS cnt FROM calls');
+  const evaluatedCallsRow = get(
+    "SELECT COUNT(DISTINCT target_id) AS cnt FROM pitch_evaluations WHERE target_type = 'call'",
+  );
+  const totalCalls = totalCallsRow?.cnt ?? 0;
+  const evaluatedCalls = evaluatedCallsRow?.cnt ?? 0;
+  return {
+    total_calls_synced: totalCalls,
+    calls_evaluated: evaluatedCalls,
+    calls_pending: Math.max(totalCalls - evaluatedCalls, 0),
+  };
+}
+
+export function getExecutiveCoachingSummary() {
+  const evaluations = listPitchEvaluations({ limit: 1000 });
+  const byExec = new Map();
+
+  for (const ev of evaluations) {
+    const resolved = resolveUnifiedExecutive(ev.executive_name || 'Sales Executive');
+    const key = resolved.canonicalName;
+    if (!byExec.has(key)) {
+      byExec.set(key, {
+        executive_name: key,
+        user_id: resolved.userId,
+        email: resolved.email,
+        phone: resolved.phone,
+        evaluated_count: 0,
+        approved_count: 0,
+        total_score: 0,
+        pillar_totals: { opener: 0, discovery: 0, value_pitch: 0, objection_handling: 0, closing: 0, followup: 0 },
+        pillar_counts: { opener: 0, discovery: 0, value_pitch: 0, objection_handling: 0, closing: 0, followup: 0 },
+        gap_counts: new Map(),
+        red_flag_count: 0,
+      });
+    }
+    const bucket = byExec.get(key);
+    bucket.evaluated_count += 1;
+    if (ev.manager_status === 'approved' || ev.manager_status === 'edited') {
+      bucket.approved_count += 1;
+    }
+    const effectiveScore = ev.manager_score != null ? Number(ev.manager_score) : Number(ev.overall_score || 0);
+    bucket.total_score += effectiveScore;
+    bucket.red_flag_count += (ev.red_flags || []).length;
+
+    for (const pillar of Object.keys(bucket.pillar_totals)) {
+      const val = Number(ev.scores?.[pillar]);
+      if (!Number.isNaN(val) && val > 0) {
+        bucket.pillar_totals[pillar] += val;
+        bucket.pillar_counts[pillar] += 1;
+      }
+    }
+    for (const gap of ev.gaps || []) {
+      const g = String(gap).trim();
+      if (g) bucket.gap_counts.set(g, (bucket.gap_counts.get(g) || 0) + 1);
+    }
+  }
+
+  const executives = Array.from(byExec.values()).map((b) => {
+    const pillars = {};
+    for (const p of Object.keys(b.pillar_totals)) {
+      pillars[p] = b.pillar_counts[p] > 0 ? Number((b.pillar_totals[p] / b.pillar_counts[p]).toFixed(1)) : 0;
+    }
+    const topGaps = Array.from(b.gap_counts.entries())
+      .sort((a, c) => c[1] - a[1])
+      .slice(0, 3)
+      .map(([text]) => text);
+
+    const channels = getExecutiveChannelCounts({
+      canonicalName: b.executive_name,
+      userId: b.user_id,
+      email: b.email,
+      phone: b.phone,
+    });
+
+    return {
+      executive_name: b.executive_name,
+      email: b.email,
+      phone: b.phone,
+      evaluated_count: b.evaluated_count,
+      approved_count: b.approved_count,
+      avg_score: b.evaluated_count > 0 ? Number((b.total_score / b.evaluated_count).toFixed(1)) : 0,
+      red_flag_count: b.red_flag_count,
+      pillars,
+      channels,
+      top_gaps: topGaps,
+    };
+  });
+
+  const approvedTotal = evaluations.filter((e) => e.manager_status === 'approved' || e.manager_status === 'edited').length;
+  const avgOverall =
+    evaluations.length > 0
+      ? Number(
+          (
+            evaluations.reduce((sum, e) => sum + Number(e.manager_score ?? e.overall_score ?? 0), 0) /
+            evaluations.length
+          ).toFixed(1),
+        )
+      : 0;
+
+  return {
+    stats: {
+      total_evaluated: evaluations.length,
+      manager_approved: approvedTotal,
+      fine_tune_target: 200,
+      avg_score: avgOverall,
+      playbook_rules: listPlaybookRules({ activeOnly: true }).length,
+      winning_pitches: evaluations.filter((e) => Number(e.manager_score ?? e.overall_score ?? 0) >= 8).length,
+    },
+    call_coverage: getCallTrainingCoverage(),
+    executives: executives.sort((a, b) => b.avg_score - a.avg_score),
+    evaluations,
+  };
+}
+
+export function exportTrainingJsonl() {
+  const approved = listPitchEvaluations({ limit: 2000 }).filter(
+    (e) => e.manager_status === 'approved' || e.manager_status === 'edited',
+  );
+
+  return approved
+    .map((ev) => {
+      const targetOutput = {
+        overall_score: ev.manager_score ?? ev.overall_score,
+        scores: ev.scores,
+        strengths: ev.strengths,
+        gaps: ev.gaps,
+        missed_questions: ev.missed_questions,
+        red_flags: ev.red_flags,
+        try_line: ev.manager_try_line || ev.try_line,
+        summary: ev.ai_summary,
+      };
+      return JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: `Evaluate this Climeto EPR sales interaction for ${ev.executive_name} with ${ev.client_name}:\n${ev.channel_summary}`,
+              },
+            ],
+          },
+          {
+            role: 'model',
+            parts: [{ text: JSON.stringify(targetOutput) }],
+          },
+        ],
+      });
+    })
+    .join('\n');
+}
+
+function parseRoleplay(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    messages: safeJsonParse(row.messages_json, []),
+    score: safeJsonParse(row.score_json, null),
+  };
+}
+
+export function createRoleplaySession({ executiveName, scenarioId, scenarioTitle, personaPrompt, openingMessage }) {
+  const id = `rp-${randomUUID().slice(0, 8)}`;
+  const now = new Date().toISOString();
+  const messages = [
+    {
+      role: 'prospect',
+      text: openingMessage,
+      timestamp: now,
+    },
+  ];
+  run(
+    `INSERT INTO roleplay_sessions
+     (id, executive_name, scenario_id, scenario_title, persona_prompt, messages_json, score_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?)`,
+    [id, executiveName || 'Sales Executive', scenarioId, scenarioTitle, personaPrompt, JSON.stringify(messages), now, now],
+  );
+  persistDb();
+  return parseRoleplay(get('SELECT * FROM roleplay_sessions WHERE id = ?', [id]));
+}
+
+export function getRoleplaySessionById(id) {
+  return parseRoleplay(get('SELECT * FROM roleplay_sessions WHERE id = ?', [id]));
+}
+
+export function listRoleplaySessions({ executive = '', limit = 20 } = {}) {
+  if (executive) {
+    return all(
+      'SELECT * FROM roleplay_sessions WHERE executive_name LIKE ? ORDER BY updated_at DESC LIMIT ?',
+      [`%${executive}%`, Number(limit) || 20],
+    ).map(parseRoleplay);
+  }
+  return all('SELECT * FROM roleplay_sessions ORDER BY updated_at DESC LIMIT ?', [Number(limit) || 20]).map(
+    parseRoleplay,
+  );
+}
+
+export function updateRoleplaySession(id, { messages, score, status }) {
+  const existing = get('SELECT * FROM roleplay_sessions WHERE id = ?', [id]);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  run(
+    `UPDATE roleplay_sessions
+     SET messages_json = COALESCE(?, messages_json),
+         score_json = COALESCE(?, score_json),
+         status = COALESCE(?, status),
+         updated_at = ?
+     WHERE id = ?`,
+    [
+      messages ? JSON.stringify(messages) : null,
+      score ? JSON.stringify(score) : null,
+      status || null,
+      now,
+      id,
+    ],
+  );
+  persistDb();
+  return getRoleplaySessionById(id);
+}
+
+// ============================================================
+// EPR Knowledge Base Documents
+// ============================================================
+
+export function listKnowledgeDocs({ activeOnly = false } = {}) {
+  const query = activeOnly
+    ? 'SELECT id, filename, file_type, source_zip, title, content, summary, char_count, is_active, created_at, updated_at FROM knowledge_docs WHERE is_active = 1 ORDER BY updated_at DESC'
+    : 'SELECT id, filename, file_type, source_zip, title, summary, char_count, is_active, created_at, updated_at FROM knowledge_docs ORDER BY updated_at DESC';
+  return all(query);
+}
+
+export function getKnowledgeDocById(id) {
+  return get('SELECT * FROM knowledge_docs WHERE id = ?', [id]);
+}
+
+export function upsertKnowledgeDoc({ filename, fileType = 'txt', sourceZip = '', title = '', content = '', summary = '' }) {
+  const cleanFilename = String(filename || 'document.txt').trim();
+  const cleanContent = String(content || '').trim();
+  if (!cleanContent) {
+    throw new Error(`No readable text found in ${cleanFilename}`);
+  }
+
+  const cleanTitle =
+    String(title || '').trim() ||
+    cleanFilename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+  const cleanSummary =
+    String(summary || '').trim() || cleanContent.replace(/\s+/g, ' ').slice(0, 220);
+  const now = new Date().toISOString();
+
+  const existing = get(
+    'SELECT id FROM knowledge_docs WHERE filename = ? AND COALESCE(source_zip, ?) = ?',
+    [cleanFilename, '', String(sourceZip || '')],
+  );
+
+  if (existing) {
+    run(
+      `UPDATE knowledge_docs
+       SET file_type = ?, title = ?, content = ?, summary = ?, char_count = ?, is_active = 1, updated_at = ?
+       WHERE id = ?`,
+      [fileType, cleanTitle, cleanContent, cleanSummary, cleanContent.length, now, existing.id],
+    );
+    persistDb();
+    return get('SELECT * FROM knowledge_docs WHERE id = ?', [existing.id]);
+  }
+
+  const id = `kb-${randomUUID().slice(0, 8)}`;
+  run(
+    `INSERT INTO knowledge_docs
+     (id, filename, file_type, source_zip, title, content, summary, char_count, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    [id, cleanFilename, fileType, String(sourceZip || ''), cleanTitle, cleanContent, cleanSummary, cleanContent.length, now, now],
+  );
+  persistDb();
+  return get('SELECT * FROM knowledge_docs WHERE id = ?', [id]);
+}
+
+export function toggleKnowledgeDoc(id, isActive) {
+  const existing = get('SELECT id FROM knowledge_docs WHERE id = ?', [id]);
+  if (!existing) return null;
+  run('UPDATE knowledge_docs SET is_active = ?, updated_at = ? WHERE id = ?', [
+    isActive ? 1 : 0,
+    new Date().toISOString(),
+    id,
+  ]);
+  persistDb();
+  return get('SELECT id, filename, file_type, source_zip, title, summary, char_count, is_active, created_at, updated_at FROM knowledge_docs WHERE id = ?', [id]);
+}
+
+export function deleteKnowledgeDoc(id) {
+  const existing = get('SELECT id FROM knowledge_docs WHERE id = ?', [id]);
+  if (!existing) return false;
+  run('DELETE FROM knowledge_docs WHERE id = ?', [id]);
+  persistDb();
+  return true;
+}
+
 
 

@@ -9,5 +9,5 @@ coverage/
 Thumbs.db
 npm-debug.log*
 yarn-error.log*
-backend/data/test-*.db
+backend/data/*.db
 backend/data/whatsapp-sessions/

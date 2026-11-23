@@ -128,15 +128,15 @@ function buildDescription({ eventType, campaignName, leadEmail, clickUrl, subjec
   const parts = [];
 
   if (eventType === 'replied') {
-    parts.push('Lead ne email ka reply bheja.');
+    parts.push('The lead replied to the email.');
   } else if (eventType === 'opened') {
-    parts.push('Lead ne campaign email open ki.');
+    parts.push('The lead opened the campaign email.');
   } else if (eventType === 'clicked') {
-    parts.push('Lead ne campaign link click kiya.');
+    parts.push('The lead clicked the campaign link.');
   } else if (eventType === 'sent') {
-    parts.push('Campaign email send ho gaya.');
+    parts.push('The campaign email was sent successfully.');
   } else if (eventType === 'bounced') {
-    parts.push('Email bounce ho gaya.');
+    parts.push('The email bounced.');
   } else {
     parts.push('Campaign activity received.');
   }
