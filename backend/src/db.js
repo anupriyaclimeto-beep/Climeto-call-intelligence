@@ -308,17 +308,53 @@ export function getDashboardData() {
       (SELECT COUNT(*) FROM calls) AS total_calls,
       (SELECT COUNT(*) FROM calls WHERE strftime('%Y-%m', created_at) = '2026-11') AS november_calls,
       (SELECT COUNT(*) FROM leads) AS total_leads,
+      (SELECT COUNT(*) FROM leads WHERE id LIKE 'zoho-%') AS zoho_leads,
       (SELECT COUNT(*) FROM leads WHERE hotness = 'hot') AS hot_leads,
       (SELECT COUNT(*) FROM calls WHERE promise NOT IN ('No promise', 'No firm promise')) AS promises,
+      (SELECT COUNT(*) FROM whatsapp_messages WHERE length(replace(client_phone, '+', '')) <= 15 AND client_phone NOT LIKE '+120363%') AS whatsapp_messages,
+      (SELECT COUNT(*) FROM campaign_events WHERE is_seeded = 0) AS campaign_events,
+      (SELECT COUNT(*) FROM zoho_emails) AS zoho_emails,
+      (SELECT COUNT(*) FROM pitch_evaluations) AS pitch_evaluated,
+      (SELECT ROUND(AVG(COALESCE(manager_score, overall_score)), 1) FROM pitch_evaluations) AS avg_pitch_score,
       (SELECT COUNT(*) FROM activities WHERE platform = 'whatsapp') AS whatsapp_events,
       (SELECT COUNT(*) FROM activities WHERE platform = 'email') AS email_events`,
   );
 
   const recent = all(
-    `SELECT id, executive_name, client_name, client_phone, summary, promise, next_action, created_at
+    `SELECT id, executive_name, client_name, client_phone, duration_seconds, sentiment, summary, promise, next_action, created_at
      FROM calls
      ORDER BY created_at DESC
      LIMIT 5`,
+  );
+
+  const recentWhatsApp = all(
+    `SELECT id, lead_id, executive_name, client_name, client_phone, direction, message, timestamp
+     FROM whatsapp_messages
+     WHERE length(replace(client_phone, '+', '')) <= 15
+       AND client_phone NOT LIKE '+120363%'
+     ORDER BY timestamp DESC
+     LIMIT 5`,
+  );
+
+  const recentCampaigns = all(
+    `SELECT id, lead_name, lead_email, campaign_name, event_type, title, occurred_at
+     FROM campaign_events
+     WHERE is_seeded = 0
+     ORDER BY occurred_at DESC
+     LIMIT 5`,
+  );
+
+  const teamSnapshot = all(
+    `SELECT
+      c.executive_name,
+      COUNT(c.id) AS call_count,
+      (SELECT COUNT(*) FROM pitch_evaluations pe WHERE LOWER(pe.executive_name) = LOWER(c.executive_name)) AS evaluated_count,
+      (SELECT ROUND(AVG(COALESCE(pe.manager_score, pe.overall_score)), 1) FROM pitch_evaluations pe WHERE LOWER(pe.executive_name) = LOWER(c.executive_name)) AS avg_score
+     FROM calls c
+     WHERE c.executive_name IS NOT NULL AND c.executive_name != ''
+     GROUP BY c.executive_name
+     ORDER BY call_count DESC
+     LIMIT 6`,
   );
 
   const recentLeads = all(
@@ -328,7 +364,7 @@ export function getDashboardData() {
      LIMIT 6`,
   );
 
-  return { stats, recent, recentLeads };
+  return { stats, recent, recentWhatsApp, recentCampaigns, teamSnapshot, recentLeads };
 }
 
 export function listCalls(filters = {}) {
@@ -1067,10 +1103,114 @@ export function upsertZohoEmail(data) {
   }
 }
 
+function ensureAppSettingsTable() {
+  run(
+    `CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT
+    )`,
+  );
+}
+
+function normalizeEmailList(list) {
+  const arr = Array.isArray(list)
+    ? list
+    : String(list || '')
+        .split(/[\s,;]+/)
+        .filter(Boolean);
+  return Array.from(
+    new Set(
+      arr
+        .map((e) => String(e || '').trim().toLowerCase())
+        .filter((e) => e.includes('@')),
+    ),
+  );
+}
+
+export function getZohoEmailSettings() {
+  ensureAppSettingsTable();
+  const trackedRow = get("SELECT value FROM app_settings WHERE key = 'zoho_tracked_emails'");
+  const hideAutoRow = get("SELECT value FROM app_settings WHERE key = 'zoho_hide_automated_emails'");
+
+  let trackedEmails = [];
+  if (trackedRow?.value != null) {
+    try {
+      trackedEmails = normalizeEmailList(JSON.parse(trackedRow.value));
+    } catch {
+      trackedEmails = normalizeEmailList(trackedRow.value);
+    }
+  } else {
+    trackedEmails = normalizeEmailList(process.env.ZOHO_TRACKED_EMAILS || '');
+  }
+
+  const hideAutomated =
+    hideAutoRow?.value != null
+      ? hideAutoRow.value === 'true'
+      : String(process.env.ZOHO_HIDE_AUTOMATED_EMAILS ?? 'true').toLowerCase() !== 'false';
+
+  return { trackedEmails, hideAutomated };
+}
+
+export function saveZohoEmailSettings({ trackedEmails, hideAutomated } = {}) {
+  ensureAppSettingsTable();
+  const now = new Date().toISOString();
+  if (trackedEmails !== undefined) {
+    const cleanList = normalizeEmailList(trackedEmails);
+    run(
+      `INSERT INTO app_settings (key, value, updated_at)
+       VALUES ('zoho_tracked_emails', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      [JSON.stringify(cleanList), now],
+    );
+  }
+  if (hideAutomated !== undefined) {
+    run(
+      `INSERT INTO app_settings (key, value, updated_at)
+       VALUES ('zoho_hide_automated_emails', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      [hideAutomated ? 'true' : 'false', now],
+    );
+  }
+  persistDb();
+  return getZohoEmailSettings();
+}
+
+export function purgeSeededZohoEmails() {
+  run("DELETE FROM zoho_emails WHERE external_id LIKE 'ze-msg-10%'");
+  persistDb();
+}
+
+function buildZohoEmailScopeFilter() {
+  const conditions = [];
+  const params = [];
+  if (process.env.NODE_ENV === 'test') {
+    return { conditions, params };
+  }
+  const { trackedEmails, hideAutomated } = getZohoEmailSettings();
+  if (trackedEmails.length > 0) {
+    const placeholders = trackedEmails.map(() => '?').join(',');
+    conditions.push(`lower(executive_email) IN (${placeholders})`);
+    params.push(...trackedEmails);
+  }
+  if (hideAutomated) {
+    conditions.push(
+      `lower(client_email) NOT LIKE '%noreply%'
+       AND lower(client_email) NOT LIKE '%no-reply%'
+       AND lower(client_email) NOT LIKE '%donotreply%'
+       AND lower(client_email) NOT LIKE '%mailer-daemon%'
+       AND lower(client_email) NOT LIKE '%zohocalendar%'
+       AND lower(client_email) NOT LIKE '%zohoaccounts%'`,
+    );
+  }
+  return { conditions, params };
+}
+
 export function listZohoEmails(filters = {}) {
   const { executive = '', direction = '', search = '', limit = 100 } = filters;
-  const conditions = ['1=1'];
-  const params = [];
+  const scope = buildZohoEmailScopeFilter();
+  const conditions = ['1=1', ...scope.conditions];
+  const params = [...scope.params];
 
   if (executive) {
     conditions.push('(lower(executive_name) LIKE ? OR lower(executive_email) LIKE ?)');
@@ -1104,21 +1244,27 @@ export function listZohoEmails(filters = {}) {
 }
 
 export function getZohoEmailsStats() {
-  const row = get(`
-    SELECT
+  const scope = buildZohoEmailScopeFilter();
+  const whereClause = scope.conditions.length ? `WHERE ${scope.conditions.join(' AND ')}` : '';
+  const row = get(
+    `SELECT
       COUNT(*) AS total_emails,
       SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outbound_count,
       SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inbound_count,
       COUNT(DISTINCT executive_email) AS active_executives
-    FROM zoho_emails
-  `);
+     FROM zoho_emails
+     ${whereClause}`,
+    scope.params,
+  );
 
-  const execRows = all(`
-    SELECT executive_name, executive_email, COUNT(*) AS email_count
-    FROM zoho_emails
-    GROUP BY executive_email
-    ORDER BY email_count DESC
-  `);
+  const execRows = all(
+    `SELECT executive_name, executive_email, COUNT(*) AS email_count
+     FROM zoho_emails
+     ${whereClause}
+     GROUP BY executive_email
+     ORDER BY email_count DESC`,
+    scope.params,
+  );
 
   return {
     total: row?.total_emails || 0,
@@ -1709,6 +1855,7 @@ export function syncExecutiveDirectoryFromCalling(callingUsers = []) {
     const rawDigits = String(cu.phone || '').replace(/\D/g, '');
     const last10 = rawDigits.length >= 10 ? rawDigits.slice(-10) : '';
     if (!callingName || !last10) continue;
+    const e164Phone = `+91${last10}`;
 
     // 1. Update matching local devices & users by phone number
     const matchingDevices = all('SELECT id, user_id, employee_name FROM devices WHERE employee_phone LIKE ?', [
@@ -1739,6 +1886,43 @@ export function syncExecutiveDirectoryFromCalling(callingUsers = []) {
             oldName.toLowerCase(),
           ]);
         }
+      }
+    }
+
+    // 1b. If no device matched by phone, align by name (e.g. replace seed phone 9899999999) or upsert user+device
+    if (matchingDevices.length === 0) {
+      const existingUser = get('SELECT id, name FROM users WHERE LOWER(name) = ?', [callingName.toLowerCase()]);
+      if (existingUser) {
+        const userDev = get('SELECT id, employee_phone FROM devices WHERE user_id = ?', [existingUser.id]);
+        if (userDev) {
+          if (userDev.employee_phone !== e164Phone) {
+            run('UPDATE devices SET employee_phone = ?, employee_name = ? WHERE id = ?', [
+              e164Phone,
+              callingName,
+              userDev.id,
+            ]);
+            updated += 1;
+          }
+        } else {
+          run(
+            'INSERT INTO devices (id, user_id, employee_name, employee_phone, platform, status) VALUES (?, ?, ?, ?, ?, ?)',
+            [`dev-${existingUser.id}`, existingUser.id, callingName, e164Phone, 'android', 'active'],
+          );
+          updated += 1;
+        }
+      } else {
+        const slug = callingName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || last10;
+        const userId = `u-calling-${slug}-${last10.slice(-4)}`;
+        const devId = `dev-calling-${last10.slice(-4)}`;
+        run(
+          'INSERT OR IGNORE INTO users (id, name, email, role) VALUES (?, ?, ?, ?)',
+          [userId, callingName, `${slug}@climeto.com`, 'executive'],
+        );
+        run(
+          'INSERT OR IGNORE INTO devices (id, user_id, employee_name, employee_phone, platform, status) VALUES (?, ?, ?, ?, ?, ?)',
+          [devId, userId, callingName, e164Phone, 'android', 'active'],
+        );
+        updated += 1;
       }
     }
 
@@ -2249,6 +2433,32 @@ export function getExecutiveCoachingSummary() {
       const g = String(gap).trim();
       if (g) bucket.gap_counts.set(g, (bucket.gap_counts.get(g) || 0) + 1);
     }
+  }
+
+  // Also include active WhatsApp executives (even before their first WhatsApp pitch evaluation)
+  const waExecRows = all(
+    `SELECT DISTINCT executive_name FROM whatsapp_messages
+     WHERE executive_name IS NOT NULL AND executive_name != ''
+       AND length(replace(client_phone, '+', '')) <= 15
+       AND client_phone NOT LIKE '+120363%'`,
+  );
+  for (const row of waExecRows) {
+    const resolved = resolveUnifiedExecutive(row.executive_name);
+    const key = resolved.canonicalName;
+    if (!key || byExec.has(key)) continue;
+    byExec.set(key, {
+      executive_name: key,
+      user_id: resolved.userId,
+      email: resolved.email,
+      phone: resolved.phone,
+      evaluated_count: 0,
+      approved_count: 0,
+      total_score: 0,
+      pillar_totals: { opener: 0, discovery: 0, value_pitch: 0, objection_handling: 0, closing: 0, followup: 0 },
+      pillar_counts: { opener: 0, discovery: 0, value_pitch: 0, objection_handling: 0, closing: 0, followup: 0 },
+      gap_counts: new Map(),
+      red_flag_count: 0,
+    });
   }
 
   const executives = Array.from(byExec.values()).map((b) => {

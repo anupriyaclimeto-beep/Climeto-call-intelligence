@@ -31,10 +31,19 @@ function cleanBody(rawBody) {
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/&(nbsp|zwnj|zwj|shy|#160|#8203|#8204|#8205|#x200[bcd]|#xa0);/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, ' ')
     .replace(/\r\n|\r|\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 300);
+    .slice(0, 300)
+    .replace(/&[a-z#0-9]*$/i, '')
+    .trim();
 }
 
 export async function syncManyreachEvents(options = {}) {
