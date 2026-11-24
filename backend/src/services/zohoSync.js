@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import {
+  initializeDb,
   persistDb,
   upsertLeadFromZoho,
   upsertZohoAccount,
@@ -127,6 +128,7 @@ async function fetchModuleRecords(moduleName, { accessToken, apiDomain, maxPages
  * Main Sync Function: Pulls Leads and Contacts from Zoho CRM and upserts into local DB.
  */
 export async function syncZohoCrm(options = {}) {
+  await initializeDb();
   const clientId = options.clientId || process.env.ZOHO_CLIENT_ID || '';
   const clientSecret = options.clientSecret || process.env.ZOHO_CLIENT_SECRET || '';
   const refreshToken = options.refreshToken || process.env.ZOHO_REFRESH_TOKEN || '';

@@ -25,7 +25,7 @@ export const leads = [
     id: 'lead-2',
     clientName: 'Vardhman Plastics',
     clientPhone: '+919990689777',
-    email: 'info@vardhmanplastics.in',
+    email: 'vardhman.plastics9@gmail.com',
     company: 'Vardhman Plastics',
     stage: 'Discovery',
     ownerId: 'u-ambuj',

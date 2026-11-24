@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   Briefcase,
+  Building2,
   LayoutDashboard,
   Mail,
   Megaphone,
@@ -15,6 +16,7 @@ import {
   Users,
 } from 'lucide-react';
 import PitchTrainingPage from './PitchTrainingPage.jsx';
+import ClientIntelPage from './ClientIntelPage.jsx';
 import {
   BrowserRouter,
   Link,
@@ -32,6 +34,7 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4200';
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/calls', label: 'Calls', icon: Phone },
+  { to: '/client-intel', label: 'Client Intel', icon: Building2 },
   { to: '/platforms/whatsapp', label: 'WhatsApp', icon: MessageCircleMore },
   { to: '/pitch-training', label: 'Pitch Training', icon: Sparkles },
   { to: '/platforms/email', label: 'Email', icon: Mail },
@@ -189,6 +192,8 @@ function buildZohoUrl(record, settings) {
 function pageTitle(pathname) {
   if (pathname.startsWith('/calls/')) return 'Call Detail';
   if (pathname.startsWith('/calls')) return 'Calls';
+  if (pathname.startsWith('/client-intel')) return 'Client Intel';
+  if (pathname.startsWith('/pitch-training')) return 'Pitch Training';
   if (pathname.startsWith('/platforms/')) return 'Platform Feed';
   if (pathname.startsWith('/zoho-crm')) return 'Zoho CRM';
   if (pathname.startsWith('/zoho-accounts')) return 'Zoho Accounts';
@@ -1571,7 +1576,13 @@ function ZohoEmailsPage() {
         </div>
 
         {!loading && !error && emails.length === 0 ? (
-          <EmptyBlock label="No emails matching the selected criteria." />
+          <div style={{ textAlign: 'center', padding: '2.5rem 1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0', margin: '1rem 0' }}>
+            <div style={{ fontSize: '1.8rem', marginBottom: '0.4rem' }}>📬</div>
+            <strong style={{ fontSize: '1rem', color: '#0f172a' }}>No 1-on-1 CRM Emails in Zoho CRM Yet</strong>
+            <p style={{ margin: '0.4rem auto 0 auto', maxWidth: '480px', fontSize: '0.85rem', color: '#64748b', lineHeight: 1.5 }}>
+              Outreach campaigns are tracked under the <strong>Campaigns</strong> tab. When BD executives send or receive direct emails inside Zoho CRM Leads or Contacts, they will automatically appear here.
+            </p>
+          </div>
         ) : null}
       </section>
     </section>
@@ -2512,6 +2523,7 @@ function WorkspaceRoutes() {
         <Route path="/lead-360" element={<Lead360Page refreshKey={refreshKey} />} />
         <Route path="/leads/:leadId" element={<LeadDetailPage refreshKey={refreshKey} />} />
         <Route path="/pitch-training" element={<PitchTrainingPage />} />
+        <Route path="/client-intel" element={<ClientIntelPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

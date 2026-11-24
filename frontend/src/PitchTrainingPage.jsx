@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import ClientIntelCard from './ClientIntelCard.jsx';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4200';
 
@@ -46,16 +47,26 @@ const subCardStyle = {
 };
 
 export default function PitchTrainingPage() {
-  const [activeTab, setActiveTab] = useState('coaching'); // coaching | playbook | roleplay | knowledge
+  const [activeTab, setActiveTab] = useState('coaching'); // coaching | playbook | roleplay | knowledge | intel
   const [coaching, setCoaching] = useState(null);
   const [playbook, setPlaybook] = useState([]);
   const [roleplayData, setRoleplayData] = useState({ scenarios: [], sessions: [] });
   const [knowledgeDocs, setKnowledgeDocs] = useState([]);
+  const [clientIntelList, setClientIntelList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [banner, setBanner] = useState('');
   const [error, setError] = useState('');
   const [copiedId, setCopiedId] = useState('');
+
+  // 360° Client Intel states
+  const [intelSearch, setIntelSearch] = useState('');
+  const [intelTempFilter, setIntelTempFilter] = useState('');
+  const [lookupQuery, setLookupQuery] = useState('');
+  const [lookupResult, setLookupResult] = useState(null);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [syncingZohoId, setSyncingZohoId] = useState(null);
+  const [extractingCallId, setExtractingCallId] = useState(null);
 
   // Coaching filters & expand state
   const [execFilter, setExecFilter] = useState('');
@@ -97,17 +108,19 @@ export default function PitchTrainingPage() {
   const loadAll = useCallback(async ({ silent = false } = {}) => {
     try {
       if (!silent) setLoading(true);
-      const [coachRes, pbRes, rpRes, kbRes] = await Promise.all([
+      const [coachRes, pbRes, rpRes, kbRes, intelRes] = await Promise.all([
         fetch(`${API_BASE}/api/training/coaching`),
         fetch(`${API_BASE}/api/training/playbook`),
         fetch(`${API_BASE}/api/training/roleplay`),
         fetch(`${API_BASE}/api/training/knowledge`),
+        fetch(`${API_BASE}/api/training/intel`),
       ]);
-      const [coachJson, pbJson, rpJson, kbJson] = await Promise.all([
+      const [coachJson, pbJson, rpJson, kbJson, intelJson] = await Promise.all([
         coachRes.json(),
         pbRes.json(),
         rpRes.json(),
         kbRes.json(),
+        intelRes.json(),
       ]);
       if (coachJson.success) {
         setCoaching(coachJson.data);
@@ -118,6 +131,7 @@ export default function PitchTrainingPage() {
       if (pbJson.success) setPlaybook(pbJson.data || []);
       if (rpJson.success) setRoleplayData(rpJson.data || { scenarios: [], sessions: [] });
       if (kbJson.success) setKnowledgeDocs(kbJson.data || []);
+      if (intelJson.success) setClientIntelList(intelJson.data || []);
       setError('');
     } catch (err) {
       setError(err.message || 'Failed to load Pitch Training data');
@@ -147,6 +161,73 @@ export default function PitchTrainingPage() {
     };
     return () => es.close();
   }, [loadAll]);
+
+  async function handleLookupCompany(e) {
+    if (e) e.preventDefault();
+    if (!lookupQuery.trim()) return;
+    try {
+      setLookingUp(true);
+      setLookupResult(null);
+      const res = await fetch(`${API_BASE}/api/training/intel/lookup-company`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company_name: lookupQuery.trim() }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setLookupResult(json.data);
+      } else {
+        setError(json.message || 'Company lookup failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Lookup request failed');
+    } finally {
+      setLookingUp(false);
+    }
+  }
+
+  async function handleSyncZoho(id) {
+    try {
+      setSyncingZohoId(id);
+      const res = await fetch(`${API_BASE}/api/training/intel/${id}/sync-zoho`, {
+        method: 'POST',
+      });
+      const json = await res.json();
+      if (json.success) {
+        setBanner(`✅ Successfully synced ${json.data.company_name} to Zoho CRM Accounts & Lead 360!`);
+        setClientIntelList((prev) =>
+          prev.map((item) => (item.id === id ? json.data : item)),
+        );
+        loadAll({ silent: true });
+      } else {
+        setError(json.message || 'Zoho sync failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Zoho sync request failed');
+    } finally {
+      setSyncingZohoId(null);
+    }
+  }
+
+  async function handleExtractCallIntel(callId) {
+    try {
+      setExtractingCallId(callId);
+      const res = await fetch(`${API_BASE}/api/training/intel/extract/${callId}`, {
+        method: 'POST',
+      });
+      const json = await res.json();
+      if (json.success) {
+        setBanner(`✅ Extracted verified 360° intel for ${json.data.company_name}!`);
+        loadAll({ silent: true });
+      } else {
+        setError(json.message || 'Extraction failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Extraction request failed');
+    } finally {
+      setExtractingCallId(null);
+    }
+  }
 
   async function handleStartBackfill() {
     try {
@@ -487,6 +568,20 @@ export default function PitchTrainingPage() {
   }, [coaching, execFilter, channelFilter, statusFilter]);
 
   const filteredPlaybook = pbFilter ? playbook.filter((r) => r.category === pbFilter) : playbook;
+
+  const filteredIntel = useMemo(() => {
+    return clientIntelList.filter((item) => {
+      if (intelTempFilter && item.lead_temperature?.toLowerCase() !== intelTempFilter.toLowerCase()) return false;
+      if (intelSearch) {
+        const q = intelSearch.toLowerCase();
+        const matchesCompany = item.company_name?.toLowerCase().includes(q);
+        const matchesContact = item.contact_name?.toLowerCase().includes(q);
+        const matchesLocation = item.location?.toLowerCase().includes(q);
+        if (!matchesCompany && !matchesContact && !matchesLocation) return false;
+      }
+      return true;
+    });
+  }, [clientIntelList, intelSearch, intelTempFilter]);
 
   return (
     <section className="page-stack" style={{ gap: '1.15rem' }}>
@@ -977,6 +1072,34 @@ export default function PitchTrainingPage() {
                             </ul>
                           </div>
                         ) : null}
+                      </div>
+                    ) : null}
+
+                    {/* 360° Verified Client Intel Card */}
+                    {isExpanded ? (
+                      <div style={{ marginTop: '0.4rem' }}>
+                        {ev.client_intel ? (
+                          <ClientIntelCard
+                            intel={ev.client_intel}
+                            onSyncZoho={handleSyncZoho}
+                            syncing={syncingZohoId === ev.client_intel.id}
+                          />
+                        ) : (
+                          <div style={{ padding: '0.85rem 1rem', background: '#f8fafc', borderRadius: '12px', border: '1px dashed #cbd5e1', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem' }}>
+                            <div style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                              🏢 <strong>360° Client Profiling:</strong> Extract Company Profile, Contact Person, and Sales Intel from this call transcript.
+                            </div>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              onClick={() => handleExtractCallIntel(ev.target_id)}
+                              disabled={extractingCallId === ev.target_id}
+                              style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}
+                            >
+                              {extractingCallId === ev.target_id ? 'Extracting...' : '⚡ Extract 360° Client Intel'}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ) : null}
 

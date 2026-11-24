@@ -4,6 +4,9 @@ import { id as migration003Id, up as migration003Up } from './003_zoho_emails.js
 import { id as migration004Id, up as migration004Up } from './004_whatsapp_messages.js';
 import { id as migration005Id, up as migration005Up } from './005_pitch_training.js';
 import { id as migration006Id, up as migration006Up } from './006_knowledge_docs.js';
+import { id as migration007Id, up as migration007Up } from './007_client_intel.js';
+import { id as migration008Id, up as migration008Up } from './008_company_dossier.js';
+import { id as migration009Id, up as migration009Up } from './009_call_extractions.js';
 
 const migrations = [
   { id: migration001Id, up: migration001Up },
@@ -12,6 +15,9 @@ const migrations = [
   { id: migration004Id, up: migration004Up },
   { id: migration005Id, up: migration005Up },
   { id: migration006Id, up: migration006Up },
+  { id: migration007Id, up: migration007Up },
+  { id: migration008Id, up: migration008Up },
+  { id: migration009Id, up: migration009Up },
 ];
 
 function all(db, query, params = []) {

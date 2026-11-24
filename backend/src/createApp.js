@@ -8,6 +8,8 @@ import {
   deletePlaybookRule,
   exportTrainingJsonl,
   getCallById,
+  getClientIntelById,
+  getClientIntelByTarget,
   getDashboardData,
   getExecutiveCoachingSummary,
   getLatestWebhookEvent,
@@ -15,15 +17,26 @@ import {
   listActivities,
   listCalls,
   listCampaignFeed,
+  listClientIntel,
   listExecutives,
   listKnowledgeDocs,
   listLeads,
   listPlaybookRules,
   listRoleplaySessions,
   listWebhookEvents,
+  syncClientIntelToZoho,
   toggleKnowledgeDoc,
   updatePitchEvaluationFeedback,
+  upsertClientIntel,
   upsertPlaybookRule,
+  saveCompanySearch,
+  getRecentCompanySearches,
+  getCachedDossier,
+  setCachedDossier,
+  saveCallExtraction,
+  saveBatchCallExtractions,
+  getCallExtractionsByCallId,
+  updateCallExtractionField,
 } from './db.js';
 import { receiveManyreachWebhook } from './services/manyreachWebhook.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
@@ -62,6 +75,13 @@ import {
   generatePlaybookRulesFromKnowledge,
   ingestUploadedFiles,
 } from './services/knowledgeBase.js';
+import { extractClientIntelForCall } from './services/clientIntelExtractor.js';
+import { enrichCompanyProfile, lookupVerifiedCompany } from './services/companyIntelEnricher.js';
+import { searchByName, getMasterData, getFinancials } from './services/mcaProvider.js';
+import { scrapeOfficialWebsite } from './services/websiteScraper.js';
+import { classifyIndustry } from './services/industryClassifier.js';
+import { mergeSectionA, createUnifiedDossier } from './services/dossierMerge.js';
+import { extractCallIntelligence } from './services/callExtractor.js';
 
 const knowledgeUpload = multer({
   storage: multer.memoryStorage(),
@@ -602,6 +622,254 @@ export function createApp({ sendEvent = () => {}, supabaseBridge = null } = {}) 
       return res.status(400).json({ success: false, message: err.message });
     }
   });
+
+  // =========================================================================
+  // 360° Client Intel & Real Corporate Data Verification Routes
+  // =========================================================================
+
+  app.get('/api/training/intel', (req, res) => {
+    const limit = Number(req.query.limit || 50);
+    const search = String(req.query.search || '').trim();
+    const temperature = String(req.query.temperature || '').trim();
+    const list = listClientIntel({ limit, search, temperature });
+    return res.json({ success: true, data: list });
+  });
+
+  app.get('/api/training/intel/target/:targetType/:targetId', (req, res) => {
+    const intel = getClientIntelByTarget(req.params.targetType, req.params.targetId);
+    if (!intel) {
+      return res.status(404).json({ success: false, message: 'Intel not found for target' });
+    }
+    return res.json({ success: true, data: intel });
+  });
+
+  app.post('/api/training/intel/extract/:callId', async (req, res) => {
+    try {
+      const intel = await extractClientIntelForCall(req.params.callId);
+      return res.status(201).json({ success: true, data: intel });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  // Candidate Search Disambiguation
+  app.get('/api/training/intel/search-companies', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      return res.status(400).json({ success: false, message: 'Search query q is required' });
+    }
+    try {
+      const candidates = await searchByName(q);
+      return res.json({ success: true, data: candidates });
+    } catch (err) {
+      const status = err.message.includes('not configured') ? 503 : 502;
+      return res.status(status).json({ success: false, message: err.message });
+    }
+  });
+
+  // Unified Dossier: Section A (Official MCA + Financials + Verified Scrape) + null Section B & C
+  app.get('/api/training/intel/company/:cin/dossier', async (req, res) => {
+    const cin = String(req.params.cin || '').trim();
+    if (!cin) {
+      return res.status(400).json({ success: false, message: 'CIN is required' });
+    }
+
+    try {
+      // 1. Check cache (TTL 7 days)
+      const cached = getCachedDossier(cin);
+      if (cached?.section_a) {
+        saveCompanySearch({
+          query: req.query.q || cached.section_a.company_name?.value || cin,
+          cin,
+          name: cached.section_a.company_name?.value || cin,
+        });
+        return res.json({ success: true, data: createUnifiedDossier(cached.section_a), cached: true });
+      }
+
+      // 2. Fetch master data + financials in parallel
+      const [masterData, financials] = await Promise.all([
+        getMasterData(cin),
+        getFinancials(cin).catch(() => ({ financial_year: null, turnover_inr: null })),
+      ]);
+
+      // 3. Official website scrape
+      const websiteData = await scrapeOfficialWebsite({
+        companyName: masterData.name,
+        cin,
+      }).catch(() => ({ website: null, email: null, phone: null, about_text: null, source_urls: [] }));
+
+      // 4. Industry classification (Gemini)
+      const industryData = await classifyIndustry({
+        nicDescription: masterData.nic_description,
+        aboutText: websiteData.about_text,
+      }).catch(() => ({
+        industry: masterData.nic_description || null,
+        business_category: null,
+        source: masterData.nic_description ? 'mca' : null,
+        confidence: masterData.nic_description ? 1.0 : 0.0,
+      }));
+
+      // 5. Merge Section A
+      const sectionA = mergeSectionA({
+        mcaMaster: { ...masterData, cin },
+        financials,
+        websiteData,
+        industryData,
+      });
+
+      // 6. Cache for 7 days & record search history
+      setCachedDossier(cin, sectionA, 7);
+      saveCompanySearch({
+        query: req.query.q || masterData.name || cin,
+        cin,
+        name: masterData.name || cin,
+      });
+
+      return res.json({ success: true, data: createUnifiedDossier(sectionA), cached: false });
+    } catch (err) {
+      const status = err.message.includes('not configured') ? 503 : 502;
+      return res.status(status).json({ success: false, message: err.message });
+    }
+  });
+
+  // Recent Real Company Searches for Quick Lookup chips
+  app.get('/api/training/intel/recent-searches', (_req, res) => {
+    try {
+      const recent = getRecentCompanySearches(5);
+      return res.json({ success: true, data: recent });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post('/api/training/intel/lookup-company', async (req, res) => {
+    const companyName = String(req.body?.company_name || req.body?.companyName || '').trim();
+    const domain = String(req.body?.domain || '').trim();
+    if (!companyName && !domain) {
+      return res.status(400).json({ success: false, message: 'Company name or domain is required' });
+    }
+    try {
+      const enriched = await enrichCompanyProfile({ companyName, domain });
+      return res.json({ success: true, data: enriched });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.put('/api/training/intel/:id', (req, res) => {
+    try {
+      const existing = getClientIntelById(req.params.id);
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'Intel record not found' });
+      }
+      const updated = upsertClientIntel({
+        ...existing,
+        ...req.body,
+        target_type: existing.target_type,
+        target_id: existing.target_id,
+      });
+      return res.json({ success: true, data: updated });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post('/api/training/intel/:id/sync-zoho', (req, res) => {
+    try {
+      const synced = syncClientIntelToZoho(req.params.id);
+      return res.json({ success: true, data: synced });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  // ==========================================
+  // CALL EXTRACTIONS & EVIDENCE VALIDATION (PROMPT 2)
+  // ==========================================
+
+  const getCallAnalysisHandler = async (req, res) => {
+    const callId = String(req.params.id || '').trim();
+    if (!callId) {
+      return res.status(400).json({ success: false, message: 'callId is required' });
+    }
+
+    const call = getCallById(callId);
+    let extractions = getCallExtractionsByCallId(callId);
+
+    if (!call && extractions.length === 0) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+
+    if (extractions.length === 0 && call?.transcript) {
+      try {
+        const validated = await extractCallIntelligence({
+          transcript: call.transcript,
+          callDate: call.created_at,
+          callerNumber: call.client_phone,
+        });
+        extractions = saveBatchCallExtractions(callId, validated, 'gemini');
+      } catch (err) {
+        console.warn(`[CallExtractor] Auto-extraction error for call ${callId}:`, err.message);
+      }
+    }
+
+    const sectionB = {};
+    const sectionC = {};
+
+    for (const row of extractions) {
+      const isNeedsReview = Boolean(row.needs_review);
+      const item = {
+        value: row.value,
+        evidence: row.evidence,
+        timestamp: row.timestamp,
+        confidence: row.confidence,
+        needs_review: isNeedsReview,
+        source: row.source,
+        model: row.model,
+      };
+
+      if (row.field_name.startsWith('contact_person.')) {
+        const key = row.field_name.replace('contact_person.', '');
+        sectionB[key] = item;
+      } else if (row.field_name.startsWith('sales_intelligence.')) {
+        const key = row.field_name.replace('sales_intelligence.', '');
+        sectionC[key] = item;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        call_id: callId,
+        section_b: Object.keys(sectionB).length > 0 ? sectionB : null,
+        section_c: Object.keys(sectionC).length > 0 ? sectionC : null,
+        extractions,
+      },
+    });
+  };
+
+  const patchCallFieldHandler = (req, res) => {
+    const callId = String(req.params.id || '').trim();
+    const fieldName = String(req.params.fieldName || '').trim();
+    const value = req.body?.value !== undefined ? req.body.value : null;
+
+    if (!callId || !fieldName) {
+      return res.status(400).json({ success: false, message: 'callId and fieldName are required' });
+    }
+
+    try {
+      const updated = updateCallExtractionField({ callId, fieldName, value });
+      return res.json({ success: true, data: updated });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  };
+
+  app.get('/api/calls/:id/analysis', getCallAnalysisHandler);
+  app.get('/api/training/intel/calls/:id/analysis', getCallAnalysisHandler);
+
+  app.patch('/api/calls/:id/fields/:fieldName', patchCallFieldHandler);
+  app.patch('/api/training/intel/calls/:id/fields/:fieldName', patchCallFieldHandler);
 
   return app;
 }

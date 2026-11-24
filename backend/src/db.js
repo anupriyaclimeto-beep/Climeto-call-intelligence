@@ -140,12 +140,19 @@ export async function initializeDb() {
 
   // Mark/copy old campaign activities into campaign_events as is_seeded=1 (idempotent).
   backfillSeededCampaignEvents();
-  seedZohoAccountsIfEmpty();
-  seedZohoEmailsIfEmpty();
+  // Only seed sample accounts/emails if explicitly enabled and no real Zoho CRM integration is configured
+  if (shouldSeedSampleData && !process.env.ZOHO_CLIENT_ID) {
+    seedZohoAccountsIfEmpty();
+    seedZohoEmailsIfEmpty();
+  }
   seedWhatsAppMessagesIfEmpty();
   purgeInvalidWhatsAppChannels();
   repairExistingWhatsAppLids();
   seedPlaybookIfEmpty();
+  // STRICT: Zoho Emails table only holds 1-on-1 emails sent/received in Zoho CRM.
+  db.run("DELETE FROM zoho_emails WHERE external_id LIKE 'manyreach-%' OR external_id LIKE 'ce-msg-%' OR external_id LIKE 'real-msg-%' OR external_id LIKE 'ze-msg-%' OR client_name IN ('ABC Polymers', 'Vardhman Plastics', 'Shree Industries')");
+  // STRICT: Purge mock demo cards from client_intel so only real BD calls populate it.
+  db.run("DELETE FROM client_intel WHERE target_id LIKE 'call-%' OR call_id LIKE 'call-%' OR company_name IN ('ABC Polymers Pvt Ltd', 'Vardhman Plastics Ltd', 'Shree Industries')");
   persistDb();
 }
 
@@ -2489,5 +2496,456 @@ export function deleteKnowledgeDoc(id) {
   return true;
 }
 
+// ==========================================
+// 360-DEGREE CLIENT INTEL PROFILE (CATEGORIES A, B, C)
+// ==========================================
+
+export function upsertClientIntel(data = {}) {
+  const targetType = String(data.target_type || data.targetType || 'call').trim();
+  const targetId = String(data.target_id || data.targetId || '').trim();
+  if (!targetId) throw new Error('target_id is required for client intel');
+
+  const now = new Date().toISOString();
+  const existing = get(
+    'SELECT id, synced_to_zoho, zoho_synced_at FROM client_intel WHERE target_type = ? AND target_id = ?',
+    [targetType, targetId],
+  );
+
+  const companyName = data.company_name ? String(data.company_name).trim() : null;
+  const companyWebsite = data.company_website ? String(data.company_website).trim() : null;
+  const industry = data.industry ? String(data.industry).trim() : null;
+  const companyEmail = data.company_email ? String(data.company_email).trim() : null;
+  const location = data.location ? String(data.location).trim() : null;
+  const employeeCount = data.employee_count ? String(data.employee_count).trim() : null;
+  const annualTurnover = data.annual_turnover ? String(data.annual_turnover).trim() : null;
+  const companyType = data.company_type ? String(data.company_type).trim() : null;
+  const businessCategory = data.business_category ? String(data.business_category).trim() : null;
+
+  const contactName = data.contact_name ? String(data.contact_name).trim() : null;
+  const contactEmail = data.contact_email ? String(data.contact_email).trim() : null;
+  const contactDesignation = data.contact_designation ? String(data.contact_designation).trim() : null;
+  const contactDepartment = data.contact_department ? String(data.contact_department).trim() : null;
+  const contactPhone = data.contact_phone ? String(data.contact_phone).trim() : null;
+  const decisionMaker = data.decision_maker ? String(data.decision_maker).trim() : null;
+  const seniority = data.seniority ? String(data.seniority).trim() : null;
+
+  const leadTemperature = data.lead_temperature ? String(data.lead_temperature).trim() : null;
+  const leadSource = data.lead_source ? String(data.lead_source).trim() : 'Calling';
+  const clientRequirement = data.client_requirement ? String(data.client_requirement).trim() : null;
+  const currentVendor = data.current_vendor && data.current_vendor !== 'Not Disclosed' ? String(data.current_vendor).trim() : null;
+  const mainProblem = data.main_problem && data.main_problem !== 'Not Disclosed' ? String(data.main_problem).trim() : null;
+  const budget = data.budget && data.budget !== 'Not Disclosed' ? String(data.budget).trim() : null;
+  const lastInteraction = data.last_interaction ? String(data.last_interaction).trim() : null;
+  const nextFollowup = data.next_followup && data.next_followup !== 'Not Scheduled' ? String(data.next_followup).trim() : null;
+
+  const rawTranscript = String(data.raw_transcript || '');
+  const extractionSource = String(data.extraction_source || 'ai_verified');
+  const isVerified = data.is_verified ? 1 : 0;
+  const leadId = data.lead_id || data.leadId || null;
+  const callId = data.call_id || data.callId || (targetType === 'call' ? targetId : null);
+
+  if (existing) {
+    run(
+      `UPDATE client_intel
+       SET lead_id = COALESCE(?, lead_id),
+           call_id = COALESCE(?, call_id),
+           company_name = ?,
+           company_website = ?,
+           industry = ?,
+           company_email = ?,
+           location = ?,
+           employee_count = ?,
+           annual_turnover = ?,
+           company_type = ?,
+           business_category = ?,
+           contact_name = ?,
+           contact_email = ?,
+           contact_designation = ?,
+           contact_department = ?,
+           contact_phone = ?,
+           decision_maker = ?,
+           seniority = ?,
+           lead_temperature = ?,
+           lead_source = ?,
+           client_requirement = ?,
+           current_vendor = ?,
+           main_problem = ?,
+           budget = ?,
+           last_interaction = ?,
+           next_followup = ?,
+           raw_transcript = COALESCE(NULLIF(?, ''), raw_transcript),
+           extraction_source = ?,
+           is_verified = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        leadId,
+        callId,
+        companyName,
+        companyWebsite,
+        industry,
+        companyEmail,
+        location,
+        employeeCount,
+        annualTurnover,
+        companyType,
+        businessCategory,
+        contactName,
+        contactEmail,
+        contactDesignation,
+        contactDepartment,
+        contactPhone,
+        decisionMaker,
+        seniority,
+        leadTemperature,
+        leadSource,
+        clientRequirement,
+        currentVendor,
+        mainProblem,
+        budget,
+        lastInteraction,
+        nextFollowup,
+        rawTranscript,
+        extractionSource,
+        isVerified,
+        now,
+        existing.id,
+      ],
+    );
+    persistDb();
+    return get('SELECT * FROM client_intel WHERE id = ?', [existing.id]);
+  }
+
+  const id = `ci-${randomUUID().slice(0, 8)}`;
+  run(
+    `INSERT INTO client_intel
+     (id, target_type, target_id, lead_id, call_id,
+      company_name, company_website, industry, company_email, location,
+      employee_count, annual_turnover, company_type, business_category,
+      contact_name, contact_email, contact_designation, contact_department,
+      contact_phone, decision_maker, seniority,
+      lead_temperature, lead_source, client_requirement, current_vendor,
+      main_problem, budget, last_interaction, next_followup,
+      raw_transcript, extraction_source, is_verified, synced_to_zoho, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    [
+      id,
+      targetType,
+      targetId,
+      leadId,
+      callId,
+      companyName,
+      companyWebsite,
+      industry,
+      companyEmail,
+      location,
+      employeeCount,
+      annualTurnover,
+      companyType,
+      businessCategory,
+      contactName,
+      contactEmail,
+      contactDesignation,
+      contactDepartment,
+      contactPhone,
+      decisionMaker,
+      seniority,
+      leadTemperature,
+      leadSource,
+      clientRequirement,
+      currentVendor,
+      mainProblem,
+      budget,
+      lastInteraction,
+      nextFollowup,
+      rawTranscript,
+      extractionSource,
+      isVerified,
+      now,
+      now,
+    ],
+  );
+  persistDb();
+  return get('SELECT * FROM client_intel WHERE id = ?', [id]);
+}
+
+export function getClientIntelByTarget(targetType = 'call', targetId) {
+  if (!targetId) return null;
+  return get('SELECT * FROM client_intel WHERE target_type = ? AND target_id = ?', [targetType, String(targetId)]);
+}
+
+export function getClientIntelById(id) {
+  if (!id) return null;
+  return get('SELECT * FROM client_intel WHERE id = ?', [String(id)]);
+}
+
+export function listClientIntel({ limit = 50, search = '', temperature = '' } = {}) {
+  const conditions = ['1=1'];
+  const params = [];
+
+  if (search) {
+    conditions.push('(company_name LIKE ? OR contact_name LIKE ? OR location LIKE ?)');
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+  if (temperature) {
+    conditions.push('LOWER(lead_temperature) = LOWER(?)');
+    params.push(temperature);
+  }
+
+  params.push(limit);
+  return all(
+    `SELECT * FROM client_intel WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`,
+    params,
+  );
+}
+
+export function syncClientIntelToZoho(id) {
+  const intel = getClientIntelById(id);
+  if (!intel) throw new Error('Client intel record not found');
+  const now = new Date().toISOString();
+
+  // 1. Upsert into zoho_accounts
+  upsertZohoAccount({
+    id: `acc-${intel.id}`,
+    accountName: intel.company_name,
+    phone: intel.contact_phone || '',
+    website: intel.company_website || '',
+    industry: intel.industry || '',
+    annualRevenue: intel.annual_turnover || '',
+    billingCity: intel.location || '',
+  });
+
+  // 2. If lead_id present, update lead
+  if (intel.lead_id) {
+    run(
+      `UPDATE leads
+       SET company = COALESCE(?, company),
+           hotness = ?,
+           next_action = ?
+       WHERE id = ?`,
+      [
+        intel.company_name,
+        intel.lead_temperature,
+        intel.next_followup,
+        intel.lead_id,
+      ],
+    );
+  }
+
+  // 3. Mark client_intel as synced to Zoho
+  run(
+    'UPDATE client_intel SET synced_to_zoho = 1, zoho_synced_at = ?, updated_at = ? WHERE id = ?',
+    [now, now, id],
+  );
+  persistDb();
+
+  return getClientIntelById(id);
+}
 
 
+
+
+
+// ==========================================
+// REAL COMPANY INTELLIGENCE & DOSSIER CACHE (PROMPT 1)
+// ==========================================
+
+export function saveCompanySearch({ query = '', cin = null, name = null } = {}) {
+  const id = `csh-${randomUUID().slice(0, 8)}`;
+  const now = new Date().toISOString();
+  run(
+    `INSERT INTO company_search_history (id, query, cin_selected, selected_name, searched_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, query.trim(), cin || null, name || null, now],
+  );
+  persistDb();
+  return { id, query, cin_selected: cin, selected_name: name, searched_at: now };
+}
+
+export function getRecentCompanySearches(limit = 5) {
+  const rows = all(
+    `SELECT query, cin_selected, selected_name, MAX(searched_at) AS last_searched_at
+     FROM company_search_history
+     WHERE selected_name IS NOT NULL AND selected_name != ''
+     GROUP BY selected_name
+     ORDER BY last_searched_at DESC
+     LIMIT ?`,
+    [limit],
+  );
+  return rows.map((r) => ({
+    name: r.selected_name,
+    cin: r.cin_selected,
+    query: r.query,
+    searched_at: r.last_searched_at,
+  }));
+}
+
+export function getCachedDossier(cin = '') {
+  if (!cin) return null;
+  const row = get('SELECT * FROM company_dossier_cache WHERE cin = ?', [String(cin).trim()]);
+  if (!row) return null;
+
+  const now = new Date().toISOString();
+  if (row.expires_at && row.expires_at < now) {
+    return null;
+  }
+
+  try {
+    return {
+      section_a: JSON.parse(row.section_a_json),
+      fetched_at: row.fetched_at,
+      expires_at: row.expires_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedDossier(cin = '', sectionA = {}, ttlDays = 7) {
+  if (!cin) return;
+  const now = new Date();
+  const fetchedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  const json = JSON.stringify(sectionA);
+
+  const existing = get('SELECT cin FROM company_dossier_cache WHERE cin = ?', [String(cin).trim()]);
+  if (existing) {
+    run(
+      'UPDATE company_dossier_cache SET section_a_json = ?, fetched_at = ?, expires_at = ? WHERE cin = ?',
+      [json, fetchedAt, expiresAt, String(cin).trim()],
+    );
+  } else {
+    run(
+      'INSERT INTO company_dossier_cache (cin, section_a_json, fetched_at, expires_at) VALUES (?, ?, ?, ?)',
+      [String(cin).trim(), json, fetchedAt, expiresAt],
+    );
+  }
+  persistDb();
+}
+
+// ==========================================
+// EVIDENCE-BACKED CALL EXTRACTIONS (PROMPT 2)
+// ==========================================
+
+export function saveCallExtraction({
+  callId = '',
+  fieldName = '',
+  value = null,
+  evidence = null,
+  timestamp = null,
+  confidence = 0.0,
+  needsReview = false,
+  source = 'call_ai',
+  model = null,
+} = {}) {
+  if (!callId || !fieldName) return null;
+  const now = new Date().toISOString();
+  const id = `ce-${randomUUID().slice(0, 8)}`;
+  const needsReviewInt = needsReview ? 1 : 0;
+  const strVal = value !== null && value !== undefined ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : null;
+
+  const existing = get(
+    'SELECT id, source FROM call_extractions WHERE call_id = ? AND field_name = ?',
+    [String(callId).trim(), String(fieldName).trim()],
+  );
+
+  if (existing) {
+    if (existing.source === 'human_verified' && source !== 'human_verified') {
+      return get('SELECT * FROM call_extractions WHERE id = ?', [existing.id]);
+    }
+
+    run(
+      `UPDATE call_extractions
+       SET value = ?, evidence = ?, timestamp = ?, confidence = ?, needs_review = ?, source = ?, model = COALESCE(?, model)
+       WHERE id = ?`,
+      [strVal, evidence, timestamp, confidence, needsReviewInt, source, model, existing.id],
+    );
+    persistDb();
+    return get('SELECT * FROM call_extractions WHERE id = ?', [existing.id]);
+  }
+
+  run(
+    `INSERT INTO call_extractions
+     (id, call_id, field_name, value, evidence, timestamp, confidence, needs_review, source, model, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      String(callId).trim(),
+      String(fieldName).trim(),
+      strVal,
+      evidence,
+      timestamp,
+      confidence,
+      needsReviewInt,
+      source,
+      model,
+      now,
+    ],
+  );
+  persistDb();
+  return get('SELECT * FROM call_extractions WHERE id = ?', [id]);
+}
+
+export function saveBatchCallExtractions(callId, validatedAnalysis, model = 'gemini') {
+  if (!callId || !validatedAnalysis) return [];
+  const results = [];
+
+  const cp = validatedAnalysis.contact_person || {};
+  for (const [key, data] of Object.entries(cp)) {
+    const saved = saveCallExtraction({
+      callId,
+      fieldName: `contact_person.${key}`,
+      value: data.value,
+      evidence: data.evidence,
+      timestamp: data.timestamp,
+      confidence: data.confidence,
+      needsReview: data.needs_review,
+      source: 'call_ai',
+      model,
+    });
+    if (saved) results.push(saved);
+  }
+
+  const si = validatedAnalysis.sales_intelligence || {};
+  for (const [key, data] of Object.entries(si)) {
+    if (key === 'temperature_signals') continue;
+    const val = key === 'budget' ? (data.amount_inr != null ? `${data.value} (INR ${data.amount_inr})` : data.value) : data.value;
+    const saved = saveCallExtraction({
+      callId,
+      fieldName: `sales_intelligence.${key}`,
+      value: val,
+      evidence: data.evidence,
+      timestamp: data.timestamp,
+      confidence: data.confidence,
+      needsReview: data.needs_review,
+      source: 'call_ai',
+      model,
+    });
+    if (saved) results.push(saved);
+  }
+
+  return results;
+}
+
+export function getCallExtractionsByCallId(callId = '') {
+  if (!callId) return [];
+  return all(
+    'SELECT * FROM call_extractions WHERE call_id = ? ORDER BY field_name ASC',
+    [String(callId).trim()],
+  );
+}
+
+export function updateCallExtractionField({ callId = '', fieldName = '', value = null } = {}) {
+  if (!callId || !fieldName) throw new Error('callId and fieldName are required');
+
+  return saveCallExtraction({
+    callId,
+    fieldName,
+    value,
+    evidence: 'Manually verified by BD executive',
+    timestamp: 'Manual',
+    confidence: 1.0,
+    needsReview: false,
+    source: 'human_verified',
+  });
+}
