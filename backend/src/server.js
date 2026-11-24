@@ -1,7 +1,13 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initializeDb, createCompletedCall, syncExecutiveDirectoryFromCalling } from './db.js';
+import {
+  initializeDb,
+  createCompletedCall,
+  syncExecutiveDirectoryFromCalling,
+  listCalls,
+  getClientIntelByTarget,
+} from './db.js';
 import { createApp } from './createApp.js';
 import { createSupabaseBridge } from './services/supabaseBridge.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
@@ -12,6 +18,7 @@ import {
   enqueueLiveCallEvaluation,
   setTrainingEventEmitter,
 } from './services/pitchAnalyzer.js';
+import { extractClientIntelForCall } from './services/clientIntelExtractor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +40,18 @@ function sendEvent(type, payload) {
 
 setTrainingEventEmitter(sendEvent);
 
+function triggerCallIntelExtraction(call) {
+  if (!call?.id) return;
+  extractClientIntelForCall(call.id)
+    .then((intel) => {
+      sendEvent('client.intel_extracted', intel);
+      sendEvent('client.intel_updated', intel);
+    })
+    .catch((err) => {
+      console.warn(`[ClientIntel] Auto-extraction error for call ${call.id}:`, err.message);
+    });
+}
+
 const supabaseBridge = createSupabaseBridge({
   upsertCall(payload) {
     return createCompletedCall(payload);
@@ -49,6 +68,7 @@ const supabaseBridge = createSupabaseBridge({
       created_at: call.created_at,
     });
     enqueueLiveCallEvaluation(call.id);
+    triggerCallIntelExtraction(call);
   },
 });
 
@@ -79,6 +99,7 @@ app.post('/api/calls/complete', (req, res) => {
     created_at: call.created_at,
   });
   enqueueLiveCallEvaluation(call.id);
+  triggerCallIntelExtraction(call);
   return res.status(201).json({ success: true, data: call });
 });
 
@@ -108,6 +129,7 @@ app.post('/api/dev/simulate-call', (_req, res) => {
     created_at: call.created_at,
   });
   enqueueLiveCallEvaluation(call.id);
+  triggerCallIntelExtraction(call);
 
   return res.status(201).json({ success: true, data: call });
 });
@@ -116,6 +138,22 @@ await supabaseBridge.start();
 
 app.listen(port, () => {
   console.log(`Workspace API running on http://localhost:${port}`);
+
+  // Auto-backfill real client intel ONLY for real calls (ignore mock seed calls call-01..10)
+  try {
+    const allCalls = listCalls();
+    for (const c of allCalls) {
+      if (c.id?.startsWith('call-')) continue; // Skip mock/demo calls
+      const existing = getClientIntelByTarget('call', c.id);
+      if (!existing) {
+        extractClientIntelForCall(c.id)
+          .then((intel) => sendEvent('client.intel_extracted', intel))
+          .catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.warn('[ClientIntel] Initial call intel sync notice:', err.message);
+  }
 
   // Auto-resume any authenticated WhatsApp Multi-Device sessions
   autoResumeWhatsAppSessions({ sendEvent }).catch((err) => {

@@ -80,6 +80,24 @@ describe('Zoho Executive Emails API & DB', () => {
     await new Promise((resolve) => {
       server = app.listen(0, () => {
         baseUrl = `http://127.0.0.1:${server.address().port}`;
+        upsertZohoEmail({
+          externalId: 'test-email-1',
+          executiveName: 'Ambuj Pathak',
+          executiveEmail: 'ambuj@climeto.com',
+          direction: 'outbound',
+          recipientEmail: 'client@example.com',
+          subject: 'EPR Quotation Details',
+          summary: 'Sent EPR compliance quote',
+        });
+        upsertZohoEmail({
+          externalId: 'test-email-2',
+          executiveName: 'Sahil',
+          executiveEmail: 'sahil@climeto.com',
+          direction: 'inbound',
+          senderEmail: 'client@example.com',
+          subject: 'Re: CPCB Certificate',
+          summary: 'Client requested certificate sample',
+        });
         resolve();
       });
     });

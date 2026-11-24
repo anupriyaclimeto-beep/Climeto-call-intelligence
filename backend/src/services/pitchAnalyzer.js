@@ -16,6 +16,8 @@ import {
   upsertPitchEvaluation,
 } from '../db.js';
 import { buildKnowledgeContextBlock } from './knowledgeBase.js';
+import { extractAndSaveClientIntel } from './clientIntelExtractor.js';
+import { extractAndSaveCallAnalysis } from './callExtractor.js';
 
 export const ROLEPLAY_SCENARIOS = [
   {
@@ -273,7 +275,7 @@ ${playbookContext}`;
   }
 
   const resolvedExec = resolveUnifiedExecutive(call.executive_name);
-  return upsertPitchEvaluation({
+  const evaluation = upsertPitchEvaluation({
     target_type: 'call',
     target_id: call.id,
     lead_id: call.lead_id,
@@ -282,6 +284,38 @@ ${playbookContext}`;
     channel_summary: channelSummary,
     ...result,
   });
+
+  try {
+    const intel = await extractAndSaveClientIntel({
+      targetType: 'call',
+      targetId: call.id,
+      leadId: call.lead_id,
+      callId: call.id,
+      transcript: call.transcript || call.summary || '',
+      clientName: call.client_name,
+      companyName: call.company || call.client_name || '',
+      phone: call.client_phone || call.phone || '',
+      executiveName: resolvedExec.canonicalName,
+      callDate: call.created_at || call.call_time,
+    });
+
+    // Evidence-backed call analysis extraction for Section B & C
+    try {
+      await extractAndSaveCallAnalysis({
+        callId: call.id,
+        transcript: call.transcript || call.summary || '',
+        clientName: call.client_name,
+        companyName: call.company || call.client_name || '',
+      });
+    } catch (analysisErr) {
+      console.warn('[PitchAnalyzer] Auto call analysis extraction non-fatal error:', analysisErr.message);
+    }
+
+    return { ...evaluation, client_intel: intel };
+  } catch (err) {
+    console.warn('[PitchAnalyzer] Auto client intel extraction non-fatal error:', err.message);
+    return evaluation;
+  }
 }
 
 export async function evaluateLeadPitch(leadId) {
@@ -831,6 +865,18 @@ ${playbookContext}`;
     };
   }
 
-  return updateRoleplaySession(sessionId, { score, status: 'completed' });
+  const updated = updateRoleplaySession(sessionId, { score, status: 'completed' });
+  try {
+    await extractAndSaveClientIntel({
+      targetType: 'roleplay',
+      targetId: sessionId,
+      transcript,
+      clientName: session.scenario_title,
+      companyName: session.scenario_title.split('—')[0]?.trim() || '',
+    });
+  } catch (err) {
+    console.warn('[Roleplay] Auto client intel extraction non-fatal error:', err.message);
+  }
+  return updated;
 }
 

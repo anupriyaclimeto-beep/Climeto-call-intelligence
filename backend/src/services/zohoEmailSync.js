@@ -104,7 +104,13 @@ export async function syncZohoEmails(options = {}) {
         if (res.status === 204 || !res.ok) continue;
 
         const json = await res.json();
-        const emailItems = Array.isArray(json.Emails) ? json.Emails : Array.isArray(json.data) ? json.data : [];
+        const emailItems = Array.isArray(json.email_related_list)
+          ? json.email_related_list
+          : Array.isArray(json.Emails)
+            ? json.Emails
+            : Array.isArray(json.data)
+              ? json.data
+              : [];
 
         for (const item of emailItems) {
           totalProcessed++;

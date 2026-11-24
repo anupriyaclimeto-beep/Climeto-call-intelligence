@@ -44,6 +44,13 @@ describe('Zoho Accounts API & DB', () => {
     await new Promise((resolve) => {
       server = app.listen(0, () => {
         baseUrl = `http://127.0.0.1:${server.address().port}`;
+        upsertZohoAccount({
+          id: 'test-acc-1',
+          accountName: 'Apex Packaging Ltd',
+          industry: 'Manufacturing',
+          annualRevenue: '₹50 Cr',
+          billingCity: 'Mumbai',
+        });
         resolve();
       });
     });
