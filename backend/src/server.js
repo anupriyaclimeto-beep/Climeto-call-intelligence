@@ -12,7 +12,7 @@ import { createApp } from './createApp.js';
 import { createSupabaseBridge } from './services/supabaseBridge.js';
 import { syncManyreachEvents } from './jobs/manyreachSyncSkeleton.js';
 import { autoResumeWhatsAppSessions } from './services/whatsappBridge.js';
-import { syncZohoCrm } from './services/zohoSync.js';
+import { syncZohoAccounts, syncZohoCrm } from './services/zohoSync.js';
 import { syncZohoEmails } from './services/zohoEmailSync.js';
 import {
   enqueueLiveCallEvaluation,
@@ -191,30 +191,39 @@ app.listen(port, () => {
     const zohoIntervalSec = Math.max(Number(process.env.ZOHO_SYNC_INTERVAL_SEC || 300), 30);
     console.log(`[Zoho CRM & Emails] Auto-sync enabled. Polling every ${zohoIntervalSec}s.`);
 
-    syncZohoCrm()
-      .then((res) => console.log('[Zoho CRM] Initial sync complete:', res))
-      .catch((err) => console.warn('[Zoho CRM] Initial sync error:', err.message));
+    const runZohoSyncChain = async (label = 'Periodic') => {
+      try {
+        const crmRes = await syncZohoCrm();
+        if (label === 'Initial' || crmRes?.inserted > 0 || crmRes?.updated > 0) {
+          console.log(`[Zoho CRM] ${label} sync:`, crmRes);
+        }
+      } catch (err) {
+        console.warn(`[Zoho CRM] ${label} sync error:`, err.message);
+      }
 
-    syncZohoEmails()
-      .then((res) => console.log('[Zoho Emails] Initial sync complete:', res))
-      .catch((err) => console.warn('[Zoho Emails] Initial sync error:', err.message));
+      try {
+        const acctRes = await syncZohoAccounts();
+        if (label === 'Initial' || acctRes?.inserted > 0 || acctRes?.updated > 0) {
+          console.log(`[Zoho Accounts] ${label} sync:`, acctRes);
+        }
+      } catch (err) {
+        console.warn(`[Zoho Accounts] ${label} sync error:`, err.message);
+      }
+
+      try {
+        const emailRes = await syncZohoEmails();
+        if (label === 'Initial' || emailRes?.inserted > 0 || emailRes?.updated > 0) {
+          console.log(`[Zoho Emails] ${label} sync:`, emailRes);
+        }
+      } catch (err) {
+        console.warn(`[Zoho Emails] ${label} sync error:`, err.message);
+      }
+    };
+
+    void runZohoSyncChain('Initial');
 
     setInterval(() => {
-      syncZohoCrm()
-        .then((res) => {
-          if (res?.inserted > 0 || res?.updated > 0) {
-            console.log(`[Zoho CRM] Synced ${res.inserted} new, ${res.updated} updated records.`);
-          }
-        })
-        .catch((err) => console.warn('[Zoho CRM] Periodic sync error:', err.message));
-
-      syncZohoEmails()
-        .then((res) => {
-          if (res?.inserted > 0 || res?.updated > 0) {
-            console.log(`[Zoho Emails] Synced ${res.inserted} new, ${res.updated} updated records.`);
-          }
-        })
-        .catch((err) => console.warn('[Zoho Emails] Periodic sync error:', err.message));
+      void runZohoSyncChain('Periodic');
     }, zohoIntervalSec * 1000);
   }
 });

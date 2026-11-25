@@ -14,6 +14,7 @@ import {
   getExecutiveCoachingSummary,
   getLatestWebhookEvent,
   getLeadById,
+  getZohoEmailSettings,
   listActivities,
   listCalls,
   listCampaignFeed,
@@ -25,6 +26,7 @@ import {
   listRoleplaySessions,
   listWebhookEvents,
   syncClientIntelToZoho,
+  saveZohoEmailSettings,
   toggleKnowledgeDoc,
   updatePitchEvaluationFeedback,
   upsertClientIntel,
@@ -274,6 +276,22 @@ export function createApp({ sendEvent = () => {}, supabaseBridge = null } = {}) 
       limit: Number(req.query.limit || 50),
     };
     return res.json({ success: true, data: getZohoEmailsPayload(filters) });
+  });
+
+  app.get('/api/zoho/emails/settings', (_req, res) => {
+    return res.json({ success: true, data: getZohoEmailSettings() });
+  });
+
+  app.put('/api/zoho/emails/settings', (req, res) => {
+    try {
+      const updated = saveZohoEmailSettings({
+        trackedEmails: req.body?.trackedEmails,
+        hideAutomated: req.body?.hideAutomated,
+      });
+      return res.json({ success: true, data: updated });
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
   });
 
   app.all('/api/zoho/emails/sync', async (_req, res) => {

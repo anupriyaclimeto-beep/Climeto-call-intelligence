@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ClientIntelCard from './ClientIntelCard.jsx';
+import { PaginationBar, usePagination } from './PaginationBar.jsx';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4200';
 
@@ -568,6 +569,7 @@ export default function PitchTrainingPage() {
   }, [coaching, execFilter, channelFilter, statusFilter]);
 
   const filteredPlaybook = pbFilter ? playbook.filter((r) => r.category === pbFilter) : playbook;
+  const evalsPager = usePagination(filteredEvaluations, 10);
 
   const filteredIntel = useMemo(() => {
     return clientIntelList.filter((item) => {
@@ -889,10 +891,21 @@ export default function PitchTrainingPage() {
                           </div>
                         </div>
                         <div style={{ textAlign: 'right' }}>
-                          <span style={{ background: sc.bg, color: sc.text, fontWeight: 700, fontSize: '0.84rem', padding: '0.3rem 0.7rem', borderRadius: '999px', display: 'inline-block' }}>
-                            {ex.avg_score} / 10
-                          </span>
-                          <div style={{ fontSize: '0.72rem', color: sc.text, marginTop: '0.15rem', fontWeight: 600 }}>{sc.label}</div>
+                          {ex.evaluated_count > 0 ? (
+                            <>
+                              <span style={{ background: sc.bg, color: sc.text, fontWeight: 700, fontSize: '0.84rem', padding: '0.3rem 0.7rem', borderRadius: '999px', display: 'inline-block' }}>
+                                {ex.avg_score} / 10
+                              </span>
+                              <div style={{ fontSize: '0.72rem', color: sc.text, marginTop: '0.15rem', fontWeight: 600 }}>{sc.label}</div>
+                            </>
+                          ) : (
+                            <>
+                              <span style={{ background: '#f1f5f9', color: '#475569', fontWeight: 700, fontSize: '0.8rem', padding: '0.3rem 0.7rem', borderRadius: '999px', display: 'inline-block' }}>
+                                Pending Analysis
+                              </span>
+                              <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.15rem' }}>Click Analyze Calls &amp; WhatsApp</div>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -989,7 +1002,7 @@ export default function PitchTrainingPage() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              {filteredEvaluations.map((ev) => {
+              {evalsPager.pageItems.map((ev) => {
                 const effScore = ev.manager_score ?? ev.overall_score;
                 const sc = scoreTheme(effScore);
                 const isExpanded = expandedEvalId === ev.id || editingEvalId === ev.id;
@@ -1184,6 +1197,15 @@ export default function PitchTrainingPage() {
                 <div className="status-card muted">No evaluations match the selected filter.</div>
               ) : null}
             </div>
+
+            <PaginationBar
+              page={evalsPager.page}
+              pageSize={evalsPager.pageSize}
+              totalItems={evalsPager.totalItems}
+              totalPages={evalsPager.totalPages}
+              onPageChange={evalsPager.setPage}
+              onPageSizeChange={evalsPager.setPageSize}
+            />
           </section>
         </>
       ) : null}

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import PitchTrainingPage from './PitchTrainingPage.jsx';
 import ClientIntelPage from './ClientIntelPage.jsx';
+import { PaginationBar, usePagination } from './PaginationBar.jsx';
 import {
   BrowserRouter,
   Link,
@@ -257,68 +258,208 @@ function AppShell({ children, liveNotice }) {
 
 function DashboardPage({ refreshKey }) {
   const dashboard = useAsync(() => api('/api/dashboard'), [refreshKey]);
-  const activities = useAsync(() => api('/api/activities'), []);
 
-  const feed = useMemo(() => activities.data || [], [activities.data]);
-  const stats = dashboard.data?.stats;
+  const stats = dashboard.data?.stats || {};
   const recent = dashboard.data?.recent || [];
-  const recentLeads = dashboard.data?.recentLeads || [];
+  const recentWhatsApp = dashboard.data?.recentWhatsApp || [];
+  const recentCampaigns = dashboard.data?.recentCampaigns || [];
+  const teamSnapshot = dashboard.data?.teamSnapshot || [];
+
+  const kpiCards = [
+    {
+      to: '/calls',
+      icon: '📞',
+      label: 'Completed Calls',
+      value: stats.total_calls ?? 0,
+      sub: 'Live Supabase Calling DB',
+      accent: '#eff6ff',
+      border: '#bfdbfe',
+      color: '#1d4ed8',
+    },
+    {
+      to: '/platforms/whatsapp',
+      icon: '💬',
+      label: 'WhatsApp Chats',
+      value: stats.whatsapp_messages ?? 0,
+      sub: 'Multi-Device Work SIMs',
+      accent: '#ecfdf5',
+      border: '#a7f3d0',
+      color: '#047857',
+    },
+    {
+      to: '/pitch-training',
+      icon: '✨',
+      label: 'Pitch Training',
+      value: stats.avg_pitch_score != null ? `${stats.avg_pitch_score} / 10` : `${stats.pitch_evaluated ?? 0}`,
+      sub: `${stats.pitch_evaluated ?? 0} AI-scored interactions`,
+      accent: '#f5f3ff',
+      border: '#ddd6fe',
+      color: '#6d28d9',
+    },
+    {
+      to: '/platforms/campaign',
+      icon: '📣',
+      label: 'Campaign Events',
+      value: stats.campaign_events ?? 0,
+      sub: 'Manyreach Live Outreach',
+      accent: '#fffbeb',
+      border: '#fde68a',
+      color: '#b45309',
+    },
+    {
+      to: '/platforms/email',
+      icon: '📧',
+      label: 'Executive Emails',
+      value: stats.zoho_emails ?? 0,
+      sub: 'Tracked Zoho Mailboxes',
+      accent: '#f0f9ff',
+      border: '#bae6fd',
+      color: '#0369a1',
+    },
+    {
+      to: '/zoho-crm',
+      icon: '💼',
+      label: 'CRM & Total Leads',
+      value: stats.total_leads ?? 0,
+      sub: `${stats.zoho_leads ?? 0} Zoho CRM · ${stats.hot_leads ?? 0} Hot`,
+      accent: '#f8fafc',
+      border: '#cbd5e1',
+      color: '#334155',
+    },
+  ];
 
   return (
-    <section className="page-stack">
-      <div className="hero-panel">
+    <section className="page-stack" style={{ gap: '1.15rem' }}>
+      {/* CLEAN EXECUTIVE HEADER */}
+      <div
+        className="hero-panel"
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '1rem',
+        }}
+      >
         <div>
-          <div className="eyebrow">Cockpit & CRM Overview</div>
-          <h3>Calls, Campaigns & Zoho CRM Workspace</h3>
-          <p>
-            Centralized hub for calls, customer promises, live email campaigns, and Zoho CRM records.
+          <div className="eyebrow">Climeto Command Center</div>
+          <h3 style={{ margin: '0.2rem 0 0.3rem 0' }}>Sales Intelligence Overview</h3>
+          <p style={{ margin: 0, color: '#475569', fontSize: '0.9rem' }}>
+            Click any channel card below to inspect live Calls, WhatsApp chats, Campaigns, Zoho CRM, or AI Pitch Coaching.
           </p>
         </div>
-        <div className="hero-badges">
-          <span className="pill neutral">Local DB</span>
-          <span className="pill neutral">Manyreach Live</span>
-          <span className="pill good">Zoho CRM Ready</span>
+        <div style={{ display: 'flex', gap: '0.55rem', flexWrap: 'wrap' }}>
+          <Link className="primary-button" to="/pitch-training" style={{ padding: '0.48rem 0.95rem', fontSize: '0.84rem' }}>
+            ✨ Open Pitch Training
+          </Link>
+          <Link className="ghost-button" to="/calls" style={{ padding: '0.48rem 0.85rem', fontSize: '0.84rem' }}>
+            📞 All Calls
+          </Link>
+          <Link className="ghost-button" to="/platforms/whatsapp" style={{ padding: '0.48rem 0.85rem', fontSize: '0.84rem' }}>
+            💬 WhatsApp
+          </Link>
         </div>
       </div>
 
       {dashboard.error ? <ErrorCard message={dashboard.error} /> : null}
 
-      <div className="stats-grid">
-        <StatCard label="Total Calls" value={stats?.total_calls} />
-        <StatCard label="Total Leads" value={stats?.total_leads} />
-        <StatCard label="Hot Leads" value={stats?.hot_leads} />
-        <StatCard label="Promises Captured" value={stats?.promises} />
+      {/* 6 CLICKABLE CHANNEL KPI CARDS */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+          gap: '0.85rem',
+        }}
+      >
+        {kpiCards.map((card) => (
+          <Link
+            key={card.to}
+            to={card.to}
+            style={{
+              textDecoration: 'none',
+              background: '#ffffff',
+              border: `1px solid ${card.border}`,
+              borderRadius: '16px',
+              padding: '1rem 1.1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.45rem',
+              boxShadow: '0 2px 8px rgba(15, 23, 42, 0.04)',
+              transition: 'transform 0.12s ease, box-shadow 0.12s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569' }}>{card.label}</span>
+              <span
+                style={{
+                  width: '30px',
+                  height: '30px',
+                  borderRadius: '9px',
+                  background: card.accent,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '0.95rem',
+                }}
+              >
+                {card.icon}
+              </span>
+            </div>
+            <div style={{ fontSize: '1.65rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.1 }}>
+              {dashboard.loading ? '—' : card.value}
+            </div>
+            <div style={{ fontSize: '0.76rem', color: card.color, fontWeight: 600 }}>
+              {card.sub} →
+            </div>
+          </Link>
+        ))}
       </div>
 
+      {/* ROW 1: LATEST CALLS + LATEST WHATSAPP CHATS */}
       <div className="two-column">
         <section className="card">
           <div className="section-head">
             <div>
-              <h3>Recent Calls</h3>
-              <p>Who called whom, what was discussed, and what the next step is.</p>
+              <h3>📞 Latest Calls</h3>
+              <p>Most recent completed sales calls from Supabase.</p>
             </div>
             <Link className="text-link" to="/calls">
-              View all
+              View all ({stats.total_calls ?? 0})
             </Link>
           </div>
 
           {dashboard.loading ? <LoadingBlock label="Loading recent calls..." /> : null}
-          {!dashboard.loading && recent.length === 0 ? <EmptyBlock label="No local calls found." /> : null}
+          {!dashboard.loading && recent.length === 0 ? <EmptyBlock label="No calls synced yet." /> : null}
 
-          <div className="stack-list">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
             {recent.map((call) => (
-              <Link key={call.id} className="list-row" to={`/calls/${call.id}`}>
-                <div>
-                  <strong>{call.executive_name}</strong>
-                  <p>
-                    {call.executive_name} {'->'} {call.client_name}
-                  </p>
+              <Link
+                key={call.id}
+                to={`/calls/${call.id}`}
+                style={{
+                  textDecoration: 'none',
+                  padding: '0.8rem 0.95rem',
+                  borderRadius: '12px',
+                  border: '1px solid #e2e8f0',
+                  background: '#f8fafc',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.3rem',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <strong style={{ color: '#0f172a', fontSize: '0.92rem' }}>{call.client_name || call.client_phone || 'Client'}</strong>
+                  <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{formatDateTime(call.created_at)}</span>
                 </div>
-                <div>
-                  <strong>{call.promise}</strong>
-                  <p>{call.next_action}</p>
+                <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.76rem' }}>
+                  <span className="pill neutral" style={{ padding: '0.18rem 0.55rem', fontSize: '0.74rem' }}>
+                    👤 {call.executive_name}
+                  </span>
+                  <span style={{ color: '#64748b' }}>⏱ {formatDuration(call.duration_seconds)}</span>
                 </div>
-                <div className="meta-align">{formatDateTime(call.created_at)}</div>
+                <p style={{ margin: '0.15rem 0 0', fontSize: '0.82rem', color: '#334155', lineHeight: 1.4 }}>
+                  {(call.summary || call.next_action || 'Click to view call transcript & summary').slice(0, 120)}
+                </p>
               </Link>
             ))}
           </div>
@@ -327,70 +468,159 @@ function DashboardPage({ refreshKey }) {
         <section className="card">
           <div className="section-head">
             <div>
-              <h3>Platform Activity Feed</h3>
-              <p>Key follow-up actions required, accessible even without scoring.</p>
+              <h3>💬 Latest WhatsApp Chats</h3>
+              <p>Live client messages across linked executive numbers.</p>
             </div>
+            <Link className="text-link" to="/platforms/whatsapp">
+              View all ({stats.whatsapp_messages ?? 0})
+            </Link>
           </div>
 
-          {activities.loading ? <LoadingBlock label="Loading platform feed..." /> : null}
-          {!activities.loading && feed.length === 0 ? <EmptyBlock label="No activities available." /> : null}
+          {dashboard.loading ? <LoadingBlock label="Loading WhatsApp chats..." /> : null}
+          {!dashboard.loading && recentWhatsApp.length === 0 ? <EmptyBlock label="No WhatsApp messages yet." /> : null}
 
-          <div className="stack-list">
-            {feed.slice(0, 6).map((item) => (
-              <div key={item.id} className="list-row">
-                <div>
-                  <strong className="capitalize">{item.platform}</strong>
-                  <p>{item.client_name}</p>
-                </div>
-                <div>
-                  <strong>{item.title}</strong>
-                  <p>{item.detail}</p>
-                </div>
-                <div className="meta-align">{formatDateTime(item.created_at)}</div>
-              </div>
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+            {recentWhatsApp.map((msg) => {
+              const isIncoming = msg.direction === 'incoming';
+              return (
+                <Link
+                  key={msg.id}
+                  to={msg.lead_id ? `/leads/${msg.lead_id}` : '/platforms/whatsapp'}
+                  style={{
+                    textDecoration: 'none',
+                    padding: '0.8rem 0.95rem',
+                    borderRadius: '12px',
+                    border: '1px solid #e2e8f0',
+                    borderLeft: `4px solid ${isIncoming ? '#10b981' : '#3b82f6'}`,
+                    background: '#f8fafc',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.3rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <strong style={{ color: '#0f172a', fontSize: '0.92rem' }}>{msg.client_name || msg.client_phone}</strong>
+                    <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{formatDateTime(msg.timestamp)}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.74rem' }}>
+                    <span className={`pill ${isIncoming ? 'good' : 'neutral'}`} style={{ padding: '0.15rem 0.55rem', fontSize: '0.72rem' }}>
+                      {isIncoming ? 'Received' : 'Sent'}
+                    </span>
+                    <span style={{ color: '#64748b' }}>Exec: {msg.executive_name}</span>
+                  </div>
+                  <p style={{ margin: '0.1rem 0 0', fontSize: '0.82rem', color: '#334155', lineHeight: 1.4 }}>
+                    {String(msg.message || '').slice(0, 120)}
+                  </p>
+                </Link>
+              );
+            })}
           </div>
         </section>
       </div>
 
-      <section className="card">
-        <div className="section-head">
-          <div>
-            <h3>Zoho CRM & Active Leads</h3>
-            <p>Unified leads synced from Zoho CRM and live client engagements.</p>
-          </div>
-          <Link className="text-link" to="/lead-360">
-            View all in Lead 360
-          </Link>
-        </div>
-
-        {dashboard.loading ? <LoadingBlock label="Loading leads..." /> : null}
-        {!dashboard.loading && recentLeads.length === 0 ? <EmptyBlock label="No leads found." /> : null}
-
-        <div className="stack-list">
-          {recentLeads.map((lead) => (
-            <Link key={lead.id} className="list-row" to={`/leads/${lead.id}`}>
-              <div>
-                <strong>{lead.client_name}</strong>
-                <p>{lead.company || lead.client_phone || 'No company'}</p>
-              </div>
-              <div>
-                <span className={`pill ${lead.hotness === 'hot' ? 'good' : 'neutral'}`}>
-                  {lead.stage || 'Contacted'}
-                </span>
-                <p style={{ marginTop: '0.25rem' }}>{lead.latest_summary}</p>
-              </div>
-              <div className="meta-align">
-                {lead.zoho_url ? (
-                  <span className="pill good">Zoho Linked</span>
-                ) : (
-                  <span className="pill neutral">Lead 360</span>
-                )}
-              </div>
+      {/* ROW 2: TEAM PERFORMANCE SNAPSHOT + LATEST CAMPAIGNS */}
+      <div className="two-column">
+        <section className="card">
+          <div className="section-head">
+            <div>
+              <h3>🏆 Team Performance Snapshot</h3>
+              <p>Calls completed and AI Pitch Training scores per executive.</p>
+            </div>
+            <Link className="text-link" to="/pitch-training">
+              Full Scorecards
             </Link>
-          ))}
-        </div>
-      </section>
+          </div>
+
+          {!dashboard.loading && teamSnapshot.length === 0 ? (
+            <EmptyBlock label="No executive activity yet." />
+          ) : null}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {teamSnapshot.map((ex) => {
+              const hasScore = ex.avg_score != null;
+              const scoreToneClass = !hasScore ? 'neutral' : ex.avg_score >= 7.5 ? 'good' : ex.avg_score >= 5 ? 'mid' : 'low';
+              return (
+                <Link
+                  key={ex.executive_name}
+                  to="/pitch-training"
+                  style={{
+                    textDecoration: 'none',
+                    padding: '0.75rem 0.95rem',
+                    borderRadius: '12px',
+                    border: '1px solid #e2e8f0',
+                    background: '#f8fafc',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                  }}
+                >
+                  <div>
+                    <strong style={{ color: '#0f172a', fontSize: '0.92rem' }}>{ex.executive_name}</strong>
+                    <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.15rem' }}>
+                      📞 {ex.call_count} Calls · ✨ {ex.evaluated_count} Pitch Evals
+                    </div>
+                  </div>
+                  <span className={`pill ${scoreToneClass}`} style={{ padding: '0.25rem 0.65rem', fontSize: '0.78rem' }}>
+                    {hasScore ? `${ex.avg_score} / 10` : 'Pending Eval'}
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="section-head">
+            <div>
+              <h3>📣 Latest Campaign Activity</h3>
+              <p>Recent Manyreach email replies, opens, and outreach.</p>
+            </div>
+            <Link className="text-link" to="/platforms/campaign">
+              View all ({stats.campaign_events ?? 0})
+            </Link>
+          </div>
+
+          {!dashboard.loading && recentCampaigns.length === 0 ? (
+            <EmptyBlock label="No campaign events synced yet." />
+          ) : null}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {recentCampaigns.map((ev) => {
+              const badge = eventTypeBadge(ev.event_type);
+              return (
+                <Link
+                  key={ev.id}
+                  to="/platforms/campaign"
+                  style={{
+                    textDecoration: 'none',
+                    padding: '0.75rem 0.95rem',
+                    borderRadius: '12px',
+                    border: '1px solid #e2e8f0',
+                    background: '#f8fafc',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.25rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}>
+                      <span className={`pill ${badge.tone}`} style={{ padding: '0.15rem 0.55rem', fontSize: '0.72rem' }}>
+                        {badge.label}
+                      </span>
+                      <strong style={{ color: '#0f172a', fontSize: '0.88rem' }}>{ev.lead_name || ev.lead_email || 'Prospect'}</strong>
+                    </span>
+                    <span style={{ fontSize: '0.74rem', color: '#64748b' }}>{formatDateTime(ev.occurred_at)}</span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.81rem', color: '#334155' }}>
+                    {cleanPreviewText(ev.title).slice(0, 110)}
+                  </p>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      </div>
     </section>
   );
 }
@@ -405,6 +635,7 @@ function CallsPage({ refreshKey }) {
 
   const calls = callsState.data || [];
   const stages = Array.from(new Set(calls.map((item) => item.stage).filter(Boolean)));
+  const callsPager = usePagination(calls, 10);
 
   return (
     <section className="page-stack">
@@ -439,7 +670,7 @@ function CallsPage({ refreshKey }) {
       {!callsState.loading && calls.length === 0 ? <EmptyBlock label="No matching calls found." /> : null}
 
       <div className="calls-grid">
-        {calls.map((call) => (
+        {callsPager.pageItems.map((call) => (
           <article key={call.id} className="call-card">
             <div className="call-top">
               <div>
@@ -485,6 +716,15 @@ function CallsPage({ refreshKey }) {
           </article>
         ))}
       </div>
+
+      <PaginationBar
+        page={callsPager.page}
+        pageSize={callsPager.pageSize}
+        totalItems={callsPager.totalItems}
+        totalPages={callsPager.totalPages}
+        onPageChange={callsPager.setPage}
+        onPageSizeChange={callsPager.setPageSize}
+      />
     </section>
   );
 }
@@ -654,6 +894,7 @@ function CallDetailPage({ refreshKey }) {
 function Lead360Page({ refreshKey }) {
   const leadsState = useAsync(() => api('/api/leads'), [refreshKey]);
   const leads = leadsState.data || [];
+  const leadsPager = usePagination(leads, 12);
 
   return (
     <section className="page-stack">
@@ -669,7 +910,7 @@ function Lead360Page({ refreshKey }) {
         {leadsState.error ? <ErrorCard message={leadsState.error} /> : null}
 
         <div className="stack-list">
-          {leads.map((lead) => (
+          {leadsPager.pageItems.map((lead) => (
             <Link key={lead.id} className="list-row" to={`/leads/${lead.id}`}>
               <div>
                 <strong>{lead.client_name}</strong>
@@ -685,6 +926,15 @@ function Lead360Page({ refreshKey }) {
             </Link>
           ))}
         </div>
+
+        <PaginationBar
+          page={leadsPager.page}
+          pageSize={leadsPager.pageSize}
+          totalItems={leadsPager.totalItems}
+          totalPages={leadsPager.totalPages}
+          onPageChange={leadsPager.setPage}
+          onPageSizeChange={leadsPager.setPageSize}
+        />
       </section>
     </section>
   );
@@ -693,6 +943,7 @@ function Lead360Page({ refreshKey }) {
 function ZohoCrmPage({ refreshKey }) {
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('zoho');
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
 
@@ -722,13 +973,27 @@ function ZohoCrmPage({ refreshKey }) {
   }
 
   const stages = Array.from(new Set(leads.map((l) => l.stage).filter(Boolean)));
+  const isZohoLead = (l) => String(l.id || '').startsWith('zoho-');
+  const isWaLead = (l) => String(l.id || '').startsWith('wa-');
+  const zohoCount = leads.filter(isZohoLead).length;
+  const waCount = leads.filter(isWaLead).length;
+  const callingCount = leads.length - zohoCount - waCount;
 
   const filtered = leads.filter((l) => {
     const text = `${l.client_name} ${l.company} ${l.client_phone} ${l.email}`.toLowerCase();
     const matchesSearch = !search || text.includes(search.toLowerCase());
     const matchesStage = !stageFilter || l.stage === stageFilter;
-    return matchesSearch && matchesStage;
+    const matchesSource =
+      sourceFilter === 'all'
+        ? true
+        : sourceFilter === 'zoho'
+          ? isZohoLead(l)
+          : sourceFilter === 'whatsapp'
+            ? isWaLead(l)
+            : !isZohoLead(l) && !isWaLead(l);
+    return matchesSearch && matchesStage && matchesSource;
   });
+  const crmPager = usePagination(filtered, 12);
 
   return (
     <section className="page-stack">
@@ -772,7 +1037,7 @@ function ZohoCrmPage({ refreshKey }) {
         ) : null}
 
         <div className="detail-grid" style={{ marginBottom: '1.25rem' }}>
-          <InfoCard title="Total Leads in System" value={leads.length} />
+          <InfoCard title="Zoho CRM Leads" value={`${zohoCount} (of ${leads.length} total)`} />
           <InfoCard title="CRM Mode" value={settings.mode || 'template'} />
           <InfoCard title="CRM Base URL" value={settings.baseUrl || 'https://crm.zoho.in/crm/tab/Leads'} />
           <InfoCard
@@ -794,6 +1059,12 @@ function ZohoCrmPage({ refreshKey }) {
               placeholder="Search by client name, company, phone, or email..."
             />
           </div>
+          <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
+            <option value="zoho">Zoho CRM Only ({zohoCount})</option>
+            <option value="all">All Workspace Leads ({leads.length})</option>
+            <option value="calling">Calling Leads ({callingCount})</option>
+            <option value="whatsapp">WhatsApp Leads ({waCount})</option>
+          </select>
           <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
             <option value="">All Stages</option>
             {stages.map((st) => (
@@ -811,7 +1082,7 @@ function ZohoCrmPage({ refreshKey }) {
         ) : null}
 
         <div className="stack-list">
-          {filtered.map((lead) => {
+          {crmPager.pageItems.map((lead) => {
             const zohoUrl = buildZohoUrl(lead, settings);
             return (
               <div key={lead.id} className="list-row">
@@ -857,6 +1128,15 @@ function ZohoCrmPage({ refreshKey }) {
             );
           })}
         </div>
+
+        <PaginationBar
+          page={crmPager.page}
+          pageSize={crmPager.pageSize}
+          totalItems={crmPager.totalItems}
+          totalPages={crmPager.totalPages}
+          onPageChange={crmPager.setPage}
+          onPageSizeChange={crmPager.setPageSize}
+        />
       </section>
     </section>
   );
@@ -884,6 +1164,7 @@ function ZohoAccountsPage({ refreshKey }) {
         (a.owner_name || '').toLowerCase().includes(q),
     );
   }, [accounts, search]);
+  const accountsPager = usePagination(filteredAccounts, 12);
 
   async function handleSync() {
     try {
@@ -1039,7 +1320,7 @@ function ZohoAccountsPage({ refreshKey }) {
         ) : null}
 
         <div className="stack-list">
-          {filteredAccounts.map((account) => (
+          {accountsPager.pageItems.map((account) => (
             <div key={account.id} className="list-row">
               <div>
                 <strong>{account.account_name}</strong>
@@ -1080,6 +1361,15 @@ function ZohoAccountsPage({ refreshKey }) {
             </div>
           ))}
         </div>
+
+        <PaginationBar
+          page={accountsPager.page}
+          pageSize={accountsPager.pageSize}
+          totalItems={accountsPager.totalItems}
+          totalPages={accountsPager.totalPages}
+          onPageChange={accountsPager.setPage}
+          onPageSizeChange={accountsPager.setPageSize}
+        />
       </section>
     </section>
   );
@@ -1193,6 +1483,22 @@ function eventTypeBadge(eventType) {
   return map[eventType] || { label: eventType || 'Event', tone: 'neutral' };
 }
 
+function cleanPreviewText(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&(nbsp|zwnj|zwj|shy|#160|#8203|#8204|#8205|#x200[bcd]|#xa0);/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, ' ')
+    .replace(/&[a-z#0-9]*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function CampaignsFeedPage() {
   const [items, setItems] = useState([]);
   const [meta, setMeta] = useState({ live: false });
@@ -1202,6 +1508,7 @@ function CampaignsFeedPage() {
   const [newIds, setNewIds] = useState(() => new Set());
   const seenIdsRef = useRef(new Set());
   const bootstrappedRef = useRef(false);
+  const campaignsPager = usePagination(items, 12);
 
   const loadFeed = useCallback(async ({ silent } = {}) => {
     try {
@@ -1294,7 +1601,7 @@ function CampaignsFeedPage() {
         {error ? <ErrorCard message={error} /> : null}
 
         <div className="stack-list">
-          {items.map((item) => {
+          {campaignsPager.pageItems.map((item) => {
             const badge = eventTypeBadge(item.event_type);
             const isNew = newIds.has(item.id);
             return (
@@ -1310,8 +1617,8 @@ function CampaignsFeedPage() {
                     {isNew ? <span className="pill good">New</span> : null}
                     {item.campaign_name ? <span className="pill neutral">{item.campaign_name}</span> : null}
                   </div>
-                  <strong>{item.title}</strong>
-                  <p>{item.description}</p>
+                  <strong>{cleanPreviewText(item.title)}</strong>
+                  <p>{cleanPreviewText(item.description)}</p>
                 </div>
                 <div className="meta-align">{formatDateTime(item.occurred_at)}</div>
               </div>
@@ -1322,6 +1629,15 @@ function CampaignsFeedPage() {
         {!loading && !error && items.length === 0 ? (
           <EmptyBlock label="No campaign activity yet" />
         ) : null}
+
+        <PaginationBar
+          page={campaignsPager.page}
+          pageSize={campaignsPager.pageSize}
+          totalItems={campaignsPager.totalItems}
+          totalPages={campaignsPager.totalPages}
+          onPageChange={campaignsPager.setPage}
+          onPageSizeChange={campaignsPager.setPageSize}
+        />
       </section>
     </section>
   );
@@ -1338,6 +1654,11 @@ function ZohoEmailsPage() {
   const [search, setSearch] = useState('');
   const [selectedExec, setSelectedExec] = useState('');
   const [selectedDirection, setSelectedDirection] = useState('');
+  const [trackedEmails, setTrackedEmails] = useState([]);
+  const [hideAutomated, setHideAutomated] = useState(true);
+  const [newTrackedEmail, setNewTrackedEmail] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
+  const emailsPager = usePagination(emails, 12);
 
   const loadEmails = useCallback(
     async ({ silent } = {}) => {
@@ -1355,6 +1676,10 @@ function ZohoEmailsPage() {
         setEmails(payload.emails || []);
         if (payload.stats) setStats(payload.stats);
         if (payload.authStatus) setAuthStatus(payload.authStatus);
+        if (payload.settings) {
+          setTrackedEmails(payload.settings.trackedEmails || []);
+          setHideAutomated(payload.settings.hideAutomated ?? true);
+        }
         setError('');
       } catch (err) {
         setError(err.message || 'Failed to load Zoho emails');
@@ -1364,6 +1689,49 @@ function ZohoEmailsPage() {
     },
     [search, selectedExec, selectedDirection],
   );
+
+  async function updateEmailTracking(nextEmails, nextHideAutomated) {
+    try {
+      setSavingSettings(true);
+      const res = await fetch(`${API_BASE}/api/zoho/emails/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trackedEmails: nextEmails,
+          hideAutomated: nextHideAutomated,
+        }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setTrackedEmails(json.data.trackedEmails || []);
+        setHideAutomated(json.data.hideAutomated ?? true);
+      }
+      await loadEmails({ silent: true });
+    } catch (err) {
+      setSyncMsg(`Settings error: ${err.message}`);
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  async function handleAddTrackedEmail(e) {
+    e.preventDefault();
+    const cleaned = newTrackedEmail.trim().toLowerCase();
+    if (!cleaned || !cleaned.includes('@')) return;
+    if (trackedEmails.includes(cleaned)) {
+      setNewTrackedEmail('');
+      return;
+    }
+    setNewTrackedEmail('');
+    await updateEmailTracking([...trackedEmails, cleaned], hideAutomated);
+  }
+
+  async function handleRemoveTrackedEmail(emailToRemove) {
+    await updateEmailTracking(
+      trackedEmails.filter((em) => em !== emailToRemove),
+      hideAutomated,
+    );
+  }
 
   useEffect(() => {
     loadEmails({ silent: false });
@@ -1483,6 +1851,107 @@ function ZohoEmailsPage() {
           </div>
         </div>
 
+        {/* TRACKED EXECUTIVES CUSTOMIZER */}
+        <div
+          style={{
+            padding: '0.85rem 1rem',
+            marginBottom: '1rem',
+            borderRadius: '12px',
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.6rem',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#0f172a' }}>
+              🎯 Tracked Executive Mailboxes ({trackedEmails.length || 'All'})
+            </span>
+            <button
+              type="button"
+              disabled={savingSettings}
+              onClick={() => updateEmailTracking(trackedEmails, !hideAutomated)}
+              style={{
+                padding: '0.28rem 0.7rem',
+                fontSize: '0.76rem',
+                fontWeight: 600,
+                borderRadius: '999px',
+                cursor: 'pointer',
+                border: hideAutomated ? '1px solid #86efac' : '1px solid #cbd5e1',
+                background: hideAutomated ? '#dcfce7' : '#ffffff',
+                color: hideAutomated ? '#166534' : '#475569',
+              }}
+            >
+              {hideAutomated ? '🟢 Hide No-Reply / Automated: ON' : '⚪ Hide No-Reply / Automated: OFF'}
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            {trackedEmails.map((em) => (
+              <span
+                key={em}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.35rem',
+                  padding: '0.25rem 0.65rem',
+                  borderRadius: '999px',
+                  background: '#eff6ff',
+                  border: '1px solid #bfdbfe',
+                  color: '#1e40af',
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                }}
+              >
+                {em}
+                <button
+                  type="button"
+                  disabled={savingSettings}
+                  onClick={() => handleRemoveTrackedEmail(em)}
+                  title="Remove from tracked mailboxes"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#1e40af',
+                    cursor: 'pointer',
+                    padding: 0,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+
+            <form onSubmit={handleAddTrackedEmail} style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+              <input
+                type="email"
+                value={newTrackedEmail}
+                onChange={(e) => setNewTrackedEmail(e.target.value)}
+                placeholder="+ Add executive email..."
+                style={{
+                  padding: '0.28rem 0.65rem',
+                  borderRadius: '999px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '0.78rem',
+                  background: '#ffffff',
+                  minWidth: '185px',
+                }}
+              />
+              <button
+                type="submit"
+                disabled={savingSettings}
+                className="ghost-button"
+                style={{ padding: '0.26rem 0.65rem', fontSize: '0.76rem', borderRadius: '999px' }}
+              >
+                Add
+              </button>
+            </form>
+          </div>
+        </div>
+
         {/* FILTER BAR */}
         <div className="filter-bar" style={{ padding: '0.75rem 0', borderTop: '1px solid #eef2f8' }}>
           <div className="search-box">
@@ -1514,7 +1983,7 @@ function ZohoEmailsPage() {
         {error ? <ErrorCard message={error} /> : null}
 
         <div className="stack-list">
-          {emails.map((item) => {
+          {emailsPager.pageItems.map((item) => {
             const isOutbound = item.direction === 'outbound';
             return (
               <div key={item.id} className="list-row">
@@ -1584,6 +2053,15 @@ function ZohoEmailsPage() {
             </p>
           </div>
         ) : null}
+
+        <PaginationBar
+          page={emailsPager.page}
+          pageSize={emailsPager.pageSize}
+          totalItems={emailsPager.totalItems}
+          totalPages={emailsPager.totalPages}
+          onPageChange={emailsPager.setPage}
+          onPageSizeChange={emailsPager.setPageSize}
+        />
       </section>
     </section>
   );
@@ -1591,6 +2069,7 @@ function ZohoEmailsPage() {
 
 function WhatsAppFeedPage({ refreshKey }) {
   const [messages, setMessages] = useState([]);
+  const waPager = usePagination(messages, 12);
   const [stats, setStats] = useState({
     total_messages: 0,
     incoming_count: 0,
@@ -1884,7 +2363,7 @@ function WhatsAppFeedPage({ refreshKey }) {
         {error ? <ErrorCard message={error} /> : null}
 
         <div className="stack-list">
-          {messages.map((item) => (
+          {waPager.pageItems.map((item) => (
             <div
               key={item.id}
               className="list-row"
@@ -1950,6 +2429,15 @@ function WhatsAppFeedPage({ refreshKey }) {
         {!loading && !error && messages.length === 0 ? (
           <EmptyBlock label="No WhatsApp messages matching the selected criteria." />
         ) : null}
+
+        <PaginationBar
+          page={waPager.page}
+          pageSize={waPager.pageSize}
+          totalItems={waPager.totalItems}
+          totalPages={waPager.totalPages}
+          onPageChange={waPager.setPage}
+          onPageSizeChange={waPager.setPageSize}
+        />
 
         {showModal ? (
           <div
