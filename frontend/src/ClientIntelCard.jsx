@@ -173,8 +173,8 @@ export default function ClientIntelCard({ intel, onSyncZoho, syncing = false, ca
 
   const isUnified = Boolean(intel.section_a);
   const secA = isUnified ? intel.section_a : intel;
-  const secB = isUnified ? intel.section_b : (intel.contact_name ? intel : null);
-  const secC = isUnified ? intel.section_c : (intel.client_requirement ? intel : null);
+  const secB = isUnified ? intel.section_b : intel;
+  const secC = isUnified ? intel.section_c : intel;
 
   const getVal = (f) => (f && typeof f === 'object' && 'value' in f ? f.value : f) || null;
   const getSrc = (f) => (f && typeof f === 'object' && 'source' in f ? f.source : null) || '';

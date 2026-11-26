@@ -32,6 +32,23 @@ const CONVERSATIONAL_STOPWORDS = new Set([
   'this', 'that', 'here', 'there', 'call', 'caller', 'response', 'outgoing', 'incoming',
 ]);
 
+export function isPhoneInTranscript(candidatePhone = '', transcript = '') {
+  if (!candidatePhone || !transcript) return false;
+  const digits = String(candidatePhone).replace(/\D/g, '');
+  if (digits.length < 7) return false;
+  const cleanTranscript = String(transcript).replace(/\D/g, '');
+  return cleanTranscript.includes(digits.slice(-7));
+}
+
+export function isInvalidPhoneNumber(phone = '', verifiedPhone = '') {
+  if (!phone || typeof phone !== 'string') return true;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 10) return true;
+  if (/^(0{10}|1{10}|2{10}|3{10}|4{10}|5{10}|6{10}|7{10}|8{10}|9{10})$/.test(digits)) return true;
+  if (/not disclosed|not stated|not available|null|undefined/i.test(phone)) return true;
+  return false;
+}
+
 export function isInvalidPersonName(name = '', execName = '') {
   if (!name || typeof name !== 'string') return true;
   const clean = name.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, '');
@@ -164,11 +181,11 @@ function extractFromTranscriptHeuristic({
     }
   }
 
-  // Designation & Department
-  let designation = 'Procurement / Sourcing Representative';
-  let department = 'Procurement';
-  let seniority = 'Manager';
-  let decisionMaker = 'Influencer';
+  // Designation & Department (Strictly null if not explicitly mentioned)
+  let designation = null;
+  let department = null;
+  let seniority = null;
+  let decisionMaker = null;
 
   if (text.includes('director') || text.includes('owner') || text.includes('founder') || text.includes('partner') || text.includes('malik')) {
     designation = 'Managing Director / Owner';
@@ -192,29 +209,30 @@ function extractFromTranscriptHeuristic({
     decisionMaker = 'Decision Maker';
   }
 
-  // 3. Sales Intelligence
-  let leadTemperature = 'Warm';
+  // 3. Sales Intelligence (Strictly null if not stated)
+  let leadTemperature = null;
   if (text.includes('interested') || text.includes('quote bhej') || text.includes('quotation bhej') || text.includes('meeting') || text.includes('urgent') || text.includes('target pending') || text.includes('kal dekh')) {
     leadTemperature = 'Hot';
   } else if (text.includes('time nahi') || text.includes('not interested') || text.includes('zarurat nahi') || text.includes('cut call') || text.includes('wrong number')) {
     leadTemperature = 'Cold';
   }
 
-  let clientRequirement = 'EPR Plastic Waste Management & CPCB Compliance';
+  let clientRequirement = null;
   if (text.includes('battery')) clientRequirement = 'Battery Waste EPR Compliance';
   else if (text.includes('e-waste') || text.includes('electronic')) clientRequirement = 'E-Waste EPR Authorization';
   else if (text.includes('category 1') || text.includes('category i') || text.includes('rigid')) clientRequirement = 'Rigid Plastic (Cat I) EPR Credits';
   else if (text.includes('flexible') || text.includes('category 2') || text.includes('category ii')) clientRequirement = 'Flexible Plastic (Cat II) Recycling Credits';
   else if (text.includes('tyre')) clientRequirement = 'Tyre Waste EPR Compliance';
   else if (text.includes('oil')) clientRequirement = 'Used Oil EPR Compliance';
+  else if (text.includes('epr') || text.includes('cpcb') || text.includes('credit') || text.includes('waste')) clientRequirement = 'EPR Plastic Waste Management & CPCB Compliance';
 
-  let currentVendor = 'Not Disclosed';
+  let currentVendor = null;
   const vendorMatch = transcript.match(/(?:already|current vendor|working with|se le rahe hain)\s+([A-Za-z0-9\s]+?)(?:\s+se|\s+ke|\.|\,)/i);
   if (vendorMatch && vendorMatch[1] && vendorMatch[1].length < 30) {
     currentVendor = vendorMatch[1].trim();
   }
 
-  let mainProblem = 'Not Disclosed';
+  let mainProblem = null;
   if (text.includes('rate') || text.includes('price') || text.includes('costly') || text.includes('expensive') || text.includes('mehenga')) {
     mainProblem = 'High credit rate & pricing discrepancy in existing PRO vendor';
   } else if (text.includes('notice') || text.includes('penalty') || text.includes('deadline')) {
@@ -225,7 +243,7 @@ function extractFromTranscriptHeuristic({
     mainProblem = 'Reviewing EPR credit pricing & compliance certification process';
   }
 
-  let nextFollowup = 'Not Scheduled';
+  let nextFollowup = null;
   const followMatch = transcript.match(/(?:call\s+(?:on|at|tomorrow|kal)|kal|tomorrow|tuesday|wednesday|monday|thursday|friday|saturday)\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)/i);
   if (followMatch) {
     nextFollowup = followMatch[0].trim();
@@ -235,13 +253,16 @@ function extractFromTranscriptHeuristic({
     nextFollowup = nextAction;
   }
 
+  const emailMatch = transcript.match(/\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/i);
+  const detectedEmail = emailMatch ? emailMatch[1] : null;
+
   return {
     detectedCompany,
-    contact_name: detectedName,
-    contact_email: leadEmail || 'Not Disclosed',
+    contact_name: detectedName !== 'Not Mentioned in Call' ? detectedName : null,
+    contact_email: detectedEmail,
     contact_designation: designation,
     contact_department: department,
-    contact_phone: phone || 'Not Available',
+    contact_phone: phone || null,
     decision_maker: decisionMaker,
     seniority,
     lead_temperature: leadTemperature,
@@ -249,8 +270,8 @@ function extractFromTranscriptHeuristic({
     client_requirement: clientRequirement,
     current_vendor: currentVendor,
     main_problem: mainProblem,
-    budget: 'Not Disclosed',
-    last_interaction: callDate ? `Call on ${new Date(callDate).toLocaleDateString('en-IN')}` : 'Call interaction',
+    budget: null,
+    last_interaction: callDate ? `Call on ${new Date(callDate).toLocaleDateString('en-IN')}` : null,
     next_followup: nextFollowup,
   };
 }
@@ -387,7 +408,8 @@ Return ONLY valid JSON matching this schema:
     company_name: companyEnriched.company_name || targetCompany,
     company_website: companyEnriched.company_website || null,
     industry: companyEnriched.industry || null,
-    company_email: companyEnriched.company_email || leadEmail || null,
+    company_email: companyEnriched.company_email || null,
+    company_phone: phone || null,
     location: companyEnriched.location || null,
     employee_count: companyEnriched.employee_count || null,
     annual_turnover: companyEnriched.annual_turnover || null,
@@ -400,10 +422,12 @@ Return ONLY valid JSON matching this schema:
       : (clientName && !isInvalidPersonName(clientName, executiveName) && clientName !== targetCompany
           ? clientName
           : null),
-    contact_email: (extracted.contact_email && extracted.contact_email !== 'Business email' && extracted.contact_email !== 'Not Disclosed') ? extracted.contact_email : (leadEmail || companyEnriched.company_email || null),
+    contact_email: (extracted.contact_email && extracted.contact_email !== 'Business email' && extracted.contact_email !== 'Not Disclosed') ? extracted.contact_email : null,
     contact_designation: extracted.contact_designation || null,
     contact_department: extracted.contact_department || null,
-    contact_phone: extracted.contact_phone || phone || null,
+    contact_phone: (extracted.contact_phone && isPhoneInTranscript(extracted.contact_phone, transcript) && !isInvalidPhoneNumber(extracted.contact_phone))
+      ? extracted.contact_phone
+      : (phone || null),
     decision_maker: extracted.decision_maker || null,
     seniority: extracted.seniority || null,
 
@@ -447,8 +471,10 @@ export async function extractClientIntelForCall(callId) {
       if (!companyName && lead.company && !isInvalidCompanyName(lead.company, executiveName)) {
         companyName = lead.company;
       }
-      if (!clientName) clientName = lead.client_name || '';
-      if (!phone) phone = lead.client_phone || '';
+      if (!clientName || clientName.startsWith('Prospect')) {
+        clientName = (lead.client_name && !lead.client_name.startsWith('Prospect')) ? lead.client_name : '';
+      }
+      if (lead.client_phone) phone = lead.client_phone;
       if (lead.email) leadEmail = lead.email;
     }
   }

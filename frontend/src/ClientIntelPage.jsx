@@ -32,6 +32,26 @@ export default function ClientIntelPage() {
   const [lookupError, setLookupError] = useState('');
   const [recentSearches, setRecentSearches] = useState([]);
   const [syncingZohoId, setSyncingZohoId] = useState(null);
+  const [syncingCalls, setSyncingCalls] = useState(false);
+
+  const handleSyncCalls = async () => {
+    setSyncingCalls(true);
+    setLookupError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/training/intel/sync-calls`, { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setBanner(`Successfully processed ${json.count || 0} calls with verified transcript facts.`);
+        loadIntel({ silent: false });
+      } else {
+        setError(json.message || 'Failed to sync calls');
+      }
+    } catch (err) {
+      setError(err.message || 'Network error syncing calls');
+    } finally {
+      setSyncingCalls(false);
+    }
+  };
 
   const loadIntel = useCallback(async ({ silent = false } = {}) => {
     try {
@@ -222,6 +242,15 @@ export default function ClientIntelPage() {
           </div>
 
           <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleSyncCalls}
+              disabled={syncingCalls}
+              style={{ fontSize: '0.82rem', padding: '0.4rem 0.85rem', background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', cursor: 'pointer' }}
+            >
+              {syncingCalls ? '⚡ Processing Calls...' : '⚡ Sync Real Calls'}
+            </button>
             <button
               type="button"
               className="ghost-button"

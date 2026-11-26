@@ -19,6 +19,7 @@ import {
   setTrainingEventEmitter,
 } from './services/pitchAnalyzer.js';
 import { extractClientIntelForCall } from './services/clientIntelExtractor.js';
+import { extractAndSaveCallAnalysis } from './services/callExtractor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,16 +41,27 @@ function sendEvent(type, payload) {
 
 setTrainingEventEmitter(sendEvent);
 
-function triggerCallIntelExtraction(call) {
+async function triggerCallIntelExtraction(call) {
   if (!call?.id) return;
-  extractClientIntelForCall(call.id)
-    .then((intel) => {
-      sendEvent('client.intel_extracted', intel);
-      sendEvent('client.intel_updated', intel);
-    })
-    .catch((err) => {
-      console.warn(`[ClientIntel] Auto-extraction error for call ${call.id}:`, err.message);
-    });
+  try {
+    const intel = await extractClientIntelForCall(call.id);
+    try {
+      await extractAndSaveCallAnalysis({
+        callId: call.id,
+        transcript: call.transcript || call.summary || '',
+        callDate: call.created_at,
+        callerNumber: call.client_phone,
+      });
+    } catch (analysisErr) {
+      console.warn(`[CallAnalysis] Auto-extraction notice for call ${call.id}:`, analysisErr.message);
+    }
+    sendEvent('client.intel_extracted', intel);
+    sendEvent('client.intel_updated', intel);
+    return intel;
+  } catch (err) {
+    console.warn(`[ClientIntel] Auto-extraction error for call ${call.id}:`, err.message);
+    return null;
+  }
 }
 
 const supabaseBridge = createSupabaseBridge({
@@ -139,21 +151,20 @@ await supabaseBridge.start();
 app.listen(port, () => {
   console.log(`Workspace API running on http://localhost:${port}`);
 
-  // Auto-backfill real client intel ONLY for real calls (ignore mock seed calls call-01..10)
-  try {
-    const allCalls = listCalls();
-    for (const c of allCalls) {
-      if (c.id?.startsWith('call-')) continue; // Skip mock/demo calls
-      const existing = getClientIntelByTarget('call', c.id);
-      if (!existing) {
-        extractClientIntelForCall(c.id)
-          .then((intel) => sendEvent('client.intel_extracted', intel))
-          .catch(() => {});
+  // Auto-backfill real client intel for existing calls sequentially
+  (async () => {
+    try {
+      const allCalls = listCalls();
+      for (const c of allCalls) {
+        const existing = getClientIntelByTarget('call', c.id);
+        if (!existing) {
+          await triggerCallIntelExtraction(c);
+        }
       }
+    } catch (err) {
+      console.warn('[ClientIntel] Initial call intel sync notice:', err.message);
     }
-  } catch (err) {
-    console.warn('[ClientIntel] Initial call intel sync notice:', err.message);
-  }
+  })();
 
   // Auto-resume any authenticated WhatsApp Multi-Device sessions
   autoResumeWhatsAppSessions({ sendEvent }).catch((err) => {

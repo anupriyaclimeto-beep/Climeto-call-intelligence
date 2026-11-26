@@ -28,11 +28,11 @@ export function persistDb() {
   fs.writeFileSync(dbPath, Buffer.from(bytes));
 }
 
-function run(query, params = []) {
+export function run(query, params = []) {
   db.run(query, params);
 }
 
-function execute(query, params = []) {
+export function execute(query, params = []) {
   const statement = db.prepare(query);
   statement.run(params);
   statement.free();
@@ -151,8 +151,6 @@ export async function initializeDb() {
   seedPlaybookIfEmpty();
   // STRICT: Zoho Emails table only holds 1-on-1 emails sent/received in Zoho CRM.
   db.run("DELETE FROM zoho_emails WHERE external_id LIKE 'manyreach-%' OR external_id LIKE 'ce-msg-%' OR external_id LIKE 'real-msg-%' OR external_id LIKE 'ze-msg-%' OR client_name IN ('ABC Polymers', 'Vardhman Plastics', 'Shree Industries')");
-  // STRICT: Purge mock demo cards from client_intel so only real BD calls populate it.
-  db.run("DELETE FROM client_intel WHERE target_id LIKE 'call-%' OR call_id LIKE 'call-%' OR company_name IN ('ABC Polymers Pvt Ltd', 'Vardhman Plastics Ltd', 'Shree Industries')");
   persistDb();
 }
 

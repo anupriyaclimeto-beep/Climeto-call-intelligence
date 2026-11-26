@@ -83,7 +83,7 @@ import { searchByName, getMasterData, getFinancials } from './services/mcaProvid
 import { scrapeOfficialWebsite } from './services/websiteScraper.js';
 import { classifyIndustry } from './services/industryClassifier.js';
 import { mergeSectionA, createUnifiedDossier } from './services/dossierMerge.js';
-import { extractCallIntelligence } from './services/callExtractor.js';
+import { extractCallIntelligence, extractAndSaveCallAnalysis } from './services/callExtractor.js';
 
 const knowledgeUpload = multer({
   storage: multer.memoryStorage(),
@@ -645,11 +645,30 @@ export function createApp({ sendEvent = () => {}, supabaseBridge = null } = {}) 
   // 360° Client Intel & Real Corporate Data Verification Routes
   // =========================================================================
 
+  function formatIntelItem(item) {
+    if (!item) return item;
+    let verifiedPhone = item.contact_phone;
+    if (item.lead_id) {
+      const leadDetail = getLeadById(item.lead_id);
+      const lead = leadDetail?.lead || leadDetail;
+      if (lead?.client_phone) {
+        verifiedPhone = lead.client_phone;
+      }
+    }
+    const isMockPhone = (p) => !p || p === 'Not Disclosed' || p === 'Not stated' || String(p).includes('Prospect') || /^(9928091979|8826893333|9856037000|7206973233|9215512065|9990857590)$/.test(String(p).replace(/\D/g, ''));
+    const cleanContactPhone = isMockPhone(item.contact_phone) ? verifiedPhone : item.contact_phone;
+    return {
+      ...item,
+      contact_phone: cleanContactPhone || null,
+      company_phone: verifiedPhone || cleanContactPhone || null,
+    };
+  }
+
   app.get('/api/training/intel', (req, res) => {
     const limit = Number(req.query.limit || 50);
     const search = String(req.query.search || '').trim();
     const temperature = String(req.query.temperature || '').trim();
-    const list = listClientIntel({ limit, search, temperature });
+    const list = listClientIntel({ limit, search, temperature }).map(formatIntelItem);
     return res.json({ success: true, data: list });
   });
 
@@ -658,7 +677,7 @@ export function createApp({ sendEvent = () => {}, supabaseBridge = null } = {}) 
     if (!intel) {
       return res.status(404).json({ success: false, message: 'Intel not found for target' });
     }
-    return res.json({ success: true, data: intel });
+    return res.json({ success: true, data: formatIntelItem(intel) });
   });
 
   app.post('/api/training/intel/extract/:callId', async (req, res) => {
@@ -667,6 +686,32 @@ export function createApp({ sendEvent = () => {}, supabaseBridge = null } = {}) 
       return res.status(201).json({ success: true, data: intel });
     } catch (err) {
       return res.status(400).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post('/api/training/intel/sync-calls', async (_req, res) => {
+    try {
+      const allCalls = listCalls();
+      const results = [];
+      for (const call of allCalls) {
+        try {
+          const intel = await extractClientIntelForCall(call.id);
+          try {
+            await extractAndSaveCallAnalysis({
+              callId: call.id,
+              transcript: call.transcript || call.summary || '',
+              callDate: call.created_at,
+              callerNumber: call.client_phone,
+            });
+          } catch {}
+          if (intel) results.push(intel);
+        } catch (callErr) {
+          console.warn(`[SyncCalls] Notice for call ${call.id}:`, callErr.message);
+        }
+      }
+      return res.status(200).json({ success: true, count: results.length, data: results });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
     }
   });
 
